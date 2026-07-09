@@ -1,0 +1,7 @@
+{
+  "name": "BugReporter.Runtime",
+  "rootNamespace": "BugReporter",
+  "references": [],
+  "includePlatforms": [],
+  "autoReferenced": true
+}
