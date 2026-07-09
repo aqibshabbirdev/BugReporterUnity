@@ -1,0 +1,7 @@
+kind: wasmer.io/App.v0
+name: bugreporterunity
+owner: aqibshabbirdev
+app_id: da_K0DIkt5UxL18
+volumes:
+  - name: data
+    mount: /data
