@@ -11,3 +11,6 @@ dist/
 [Oo]bj/
 *.csproj
 *.sln
+backend/.venv/
+backend/static/
+*.sqlite

@@ -1,0 +1,6 @@
+kind: wasmer.io/App.v0
+name: bugreporter
+package: .
+volumes:
+  - name: data
+    mount: /data
