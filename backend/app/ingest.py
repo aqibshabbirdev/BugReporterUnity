@@ -118,12 +118,11 @@ def report():
                 metadata_json, has_shot, has_logs, ts, ts,
             ),
         )
-        # Build registry: first report from an unseen version creates the row.
+        # Build registry: first report from an unseen version creates the row (MySQL upsert).
         conn.execute(
             """INSERT INTO builds (id, project_id, version, platform, first_seen_at, report_count)
                VALUES (?,?,?,?,?,1)
-               ON CONFLICT(project_id, version)
-               DO UPDATE SET report_count = report_count + 1""",
+               ON DUPLICATE KEY UPDATE report_count = report_count + 1""",
             (db.new_id(), project["id"], build_version, platform, ts),
         )
 
