@@ -43,9 +43,18 @@ namespace BugReporter
                 _config = config;
                 return;
             }
+            // Pasted keys/URLs routinely arrive with stray whitespace or a newline — trim before validating,
+            // or the server rejects every report with a confusing 401 (header present but malformed).
+            config.ApiKey = config.ApiKey?.Trim();
+            config.Endpoint = config.Endpoint?.Trim();
             if (string.IsNullOrEmpty(config.ApiKey) || string.IsNullOrEmpty(config.Endpoint))
             {
                 Debug.LogError("[BugReporter] ApiKey and Endpoint are required — reporter stays off.");
+                return;
+            }
+            if (!config.ApiKey.StartsWith("br_"))
+            {
+                Debug.LogError($"[BugReporter] ApiKey looks wrong ('{config.ApiKey.Substring(0, Math.Min(8, config.ApiKey.Length))}…') — it must start with br_. Get a fresh key from the dashboard (Settings → Rotate API key). Reporter stays off.");
                 return;
             }
 
