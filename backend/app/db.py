@@ -79,6 +79,9 @@ class _Conn:
 
 
 def connect() -> "_Conn":
+    # WASIX quirk: pymysql's import runs getpass.getuser(), which raises OSError when the sandbox
+    # has no USER env var (pymysql only catches KeyError). Give it one before the import.
+    os.environ.setdefault("USER", "wasix")
     import pymysql  # lazy — see module docstring/header note
     c = _creds()
     return _Conn(pymysql.connect(
