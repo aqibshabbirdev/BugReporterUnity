@@ -12,5 +12,5 @@ dist/
 *.csproj
 *.sln
 backend/.venv/
-backend/static/
 *.sqlite
+dashboard/node_modules/
