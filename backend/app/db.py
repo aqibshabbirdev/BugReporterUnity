@@ -13,7 +13,9 @@ import os
 import time
 import uuid
 
-import pymysql
+# pymysql import is LAZY (inside connect()): if the build skipped pip install, a top-level import
+# kills the worker before Flask serves a byte — an opaque edge 500. Lazy, the app comes up and
+# /api/health reports "ModuleNotFoundError: pymysql" so the build problem diagnoses itself.
 
 
 def _env(*names, default=None):
@@ -76,7 +78,8 @@ class _Conn:
         return False
 
 
-def connect() -> _Conn:
+def connect() -> "_Conn":
+    import pymysql  # lazy — see module docstring/header note
     c = _creds()
     return _Conn(pymysql.connect(
         host=c["host"], port=c["port"], user=c["user"], password=c["password"],
