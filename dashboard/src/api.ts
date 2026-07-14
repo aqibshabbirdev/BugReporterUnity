@@ -28,9 +28,12 @@ export interface Build {
   version: string; platform: string | null
   first_seen_at: number; report_count: number; open_count: number
 }
+export interface Game {
+  game: string; report_count: number; open_count: number
+}
 export interface IssueRow {
   id: string; title: string; severity: string; status: string
-  fixed_in_build: string | null; build_version: string; platform: string | null; created_at: number
+  fixed_in_build: string | null; build_version: string; game: string; platform: string | null; created_at: number
 }
 export interface IssueDetail extends IssueRow {
   description: string; device_model: string; os_version: string
@@ -54,9 +57,10 @@ export const api = {
   rotateKey: (pid: string) =>
     req<{ apiKey: string }>(`/api/projects/${pid}/rotate-key`, { method: 'POST' }),
 
-  issues: (pid: string, filters: { build?: string; status?: string }) => {
+  issues: (pid: string, filters: { build?: string; game?: string; status?: string }) => {
     const q = new URLSearchParams()
     if (filters.build) q.set('build', filters.build)
+    if (filters.game) q.set('game', filters.game)
     if (filters.status) q.set('status', filters.status)
     const qs = q.toString()
     return req<IssueRow[]>(`/api/projects/${pid}/issues${qs ? `?${qs}` : ''}`)
@@ -70,6 +74,7 @@ export const api = {
     req<{ ok: boolean }>(`/api/issues/${iid}/comments`, { method: 'POST', body: JSON.stringify({ text }) }),
 
   builds: (pid: string) => req<Build[]>(`/api/projects/${pid}/builds`),
+  games: (pid: string) => req<Game[]>(`/api/projects/${pid}/games`),
 
   logsUrl: (iid: string) => `/api/issues/${iid}/logs.txt`,
   screenshotUrl: (iid: string) => `/api/issues/${iid}/screenshot.jpg`,

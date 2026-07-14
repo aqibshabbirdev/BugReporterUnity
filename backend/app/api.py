@@ -157,10 +157,12 @@ def rotate_key(pid):
 @bp.get("/api/projects/<pid>/issues")
 @require_user
 def list_issues(pid):
-    q = "SELECT id, title, severity, status, fixed_in_build, build_version, platform, created_at FROM issues WHERE project_id = ?"
+    q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, platform, created_at FROM issues WHERE project_id = ?"
     params: list = [pid]
     if request.args.get("build"):
         q += " AND build_version = ?"; params.append(request.args["build"])
+    if request.args.get("game"):
+        q += " AND game = ?"; params.append(request.args["game"])
     if request.args.get("status"):
         q += " AND status = ?"; params.append(request.args["status"])
     q += " ORDER BY created_at DESC LIMIT 500"
@@ -253,5 +255,24 @@ def list_builds(pid):
                       (SELECT COUNT(*) FROM issues i WHERE i.project_id = b.project_id
                         AND i.build_version = b.version AND i.status = 'open') AS open_count
                FROM builds b WHERE project_id = ? ORDER BY first_seen_at DESC""", (pid,)
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+# ── games ─────────────────────────────────────────────────────────────────────
+# No registry table — a "game" is just a value the SDK stamps on each issue. Derive the filter
+# list straight from the issues that carry one (blank = SDK never called SetGame).
+
+@bp.get("/api/projects/<pid>/games")
+@require_user
+def list_games(pid):
+    with db.connect() as conn:
+        rows = conn.execute(
+            """SELECT game,
+                      COUNT(*) AS report_count,
+                      COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_count
+               FROM issues
+               WHERE project_id = ? AND game <> ''
+               GROUP BY game ORDER BY game""", (pid,)
         ).fetchall()
     return jsonify([dict(r) for r in rows])

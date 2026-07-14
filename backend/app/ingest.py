@@ -1,9 +1,12 @@
 """The /api/report endpoint the Unity SDK posts to.
 
 Multipart form:
-  report      application/json  (title, severity, buildVersion, device fields, metadata)
+  report      application/json  (title, severity, buildVersion, game/scene, device fields, metadata)
   logs        text/plain        (optional)
   screenshot  image/jpeg        (optional)
+
+The game is either sent explicitly (SetGame) or derived here from the active scene path — see
+_game_from_scene below.
 Header:
   X-Api-Key   the project's write-only key
 
@@ -29,6 +32,50 @@ MAX_SHOT_BYTES = 2 * 1024 * 1024    # jpeg q60 of a 1440p frame stays well under
 _recent: dict[str, list[float]] = {}
 RATE_LIMIT = 30          # reports
 RATE_WINDOW = 60.0       # per minute per key
+
+
+# ── scene → game ────────────────────────────────────────────────────────────
+# The SDK ships the active scene's asset path, e.g. "Assets/_Games/CRICKET/Scene/Ground.unity".
+# Every game lives under "_Games/<Folder>/", so we take the folder right after that marker as the
+# game key — more robust than a substring match (plain "Car".contains would also fire on "Carrom").
+# Unknown folders pass through as-is, so a new game shows up in the dashboard with no code change here;
+# only add a row below when the folder name isn't the label you want to see.
+_GAME_MARKER = "_Games/"
+
+# Checked BEFORE folder derivation — for scenes whose "_Games/<folder>" would mislabel them. The app's
+# global lobby ("Home") physically lives under the 8Ball pool folder but isn't an 8-ball screen, so match
+# its distinctive path and tag it "Lobby" instead. (Substring match; keep fragments specific.)
+_SCENE_OVERRIDES = [
+    ("MultiplayerSystem/Scenes/Home", "Lobby"),
+]
+
+_GAME_NAMES = {
+    "CRICKET":          "Cricket",
+    "8Ball pool":       "8 Ball Pool",
+    "Carrom":           "Carrom",
+    "Ludo":             "Ludo",
+    "Snokker":          "Snooker",
+    "Snake aur Ladder": "Snake & Ladder",
+    "12 Beads":         "12 Beads",
+    "Highway Racer":    "Highway Racer",
+    "1.Horse Riding":   "Horse Racing",
+    "Car":              "Car Racing",
+}
+
+
+def _game_from_scene(scene: str) -> str:
+    """Folder right after '_Games/' → its display name. Shared scenes (Login, Loading, Connection)
+    aren't under _Games and map to '' (no game)."""
+    for frag, label in _SCENE_OVERRIDES:
+        if frag in scene:
+            return label
+    i = scene.find(_GAME_MARKER)
+    if i == -1:
+        return ""
+    folder = scene[i + len(_GAME_MARKER):].split("/", 1)[0].strip()
+    if not folder:
+        return ""
+    return _GAME_NAMES.get(folder, folder)[:80]
 
 
 def _rate_limited(key_hash: str) -> bool:
@@ -70,6 +117,8 @@ def report():
     if not title:
         return jsonify(error="title required"), 400
     build_version = str(body.get("buildVersion") or "unknown")[:50]
+    # Prefer an explicit game (SetGame) if the SDK sent one; otherwise derive it from the active scene.
+    game = str(body.get("game") or "")[:80] or _game_from_scene(str(body.get("scene") or ""))
     severity = body.get("severity")
     if severity not in ("low", "normal", "high", "crash"):
         severity = "normal"
@@ -104,13 +153,13 @@ def report():
     with db.connect() as conn:
         conn.execute(
             """INSERT INTO issues (id, project_id, title, description, severity, status,
-                   build_version, platform, device_model, os_version, screen_resolution,
+                   build_version, game, platform, device_model, os_version, screen_resolution,
                    memory_mb, metadata, has_screenshot, has_logs, created_at, updated_at)
-               VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 issue_id, project["id"], title,
                 str(body.get("description") or "")[:2000],
-                severity, build_version, platform,
+                severity, build_version, game, platform,
                 str(body.get("deviceModel") or "")[:80],
                 str(body.get("osVersion") or "")[:80],
                 str(body.get("screenResolution") or "")[:20],

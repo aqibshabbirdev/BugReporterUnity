@@ -128,6 +128,7 @@ _SCHEMA = [
         status            VARCHAR(20) NOT NULL DEFAULT 'open',
         fixed_in_build    VARCHAR(50),
         build_version     VARCHAR(50) NOT NULL,
+        game              VARCHAR(80) NOT NULL DEFAULT '',
         platform          VARCHAR(40),
         device_model      VARCHAR(80),
         os_version        VARCHAR(80),
@@ -139,7 +140,8 @@ _SCHEMA = [
         created_at        BIGINT NOT NULL,
         updated_at        BIGINT NOT NULL,
         KEY idx_issues_project_created (project_id, created_at),
-        KEY idx_issues_project_build   (project_id, build_version)
+        KEY idx_issues_project_build   (project_id, build_version),
+        KEY idx_issues_project_game    (project_id, game)
     )""",
     """CREATE TABLE IF NOT EXISTS comments (
         id         VARCHAR(32) PRIMARY KEY,
@@ -155,6 +157,24 @@ def init_db():
     with connect() as conn:
         for stmt in _SCHEMA:
             conn.execute(stmt)
+        _migrate(conn)
+
+
+def _migrate(conn):
+    """Bring an already-created schema up to date. Runs every boot, so each step must be idempotent.
+
+    CREATE TABLE IF NOT EXISTS never alters an existing table, so a column added after a deployment
+    has to land here. We check information_schema rather than relying on ADD COLUMN IF NOT EXISTS
+    (which MySQL, unlike MariaDB, does not support).
+    """
+    # issues.game — per-game separation under a single project/API key.
+    has_game = conn.execute(
+        """SELECT COUNT(*) c FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = 'issues' AND column_name = 'game'"""
+    ).fetchone()["c"]
+    if not has_game:
+        conn.execute("ALTER TABLE issues ADD COLUMN game VARCHAR(80) NOT NULL DEFAULT '' AFTER build_version")
+        conn.execute("ALTER TABLE issues ADD KEY idx_issues_project_game (project_id, game)")
 
 
 def now() -> int:

@@ -13,17 +13,24 @@ namespace BugReporter
     {
         private readonly string[] _lines;
         private readonly object _lock = new object();
+        private readonly bool _includeWarnings;
         private int _next;      // next slot to write
         private bool _wrapped;  // has the ring wrapped at least once
 
-        public LogBuffer(int capacity)
+        public LogBuffer(int capacity, bool includeWarnings = false)
         {
             _lines = new string[Mathf.Max(16, capacity)];
+            _includeWarnings = includeWarnings;
             Application.logMessageReceivedThreaded += OnLog;
         }
 
         private void OnLog(string message, string stackTrace, LogType type)
         {
+            // Warnings are the loudest, least useful thing in a bug report — a single frame can emit dozens and
+            // shove the real error out of the ring. Drop them unless explicitly asked for. (Errors/asserts/
+            // exceptions always stay.)
+            if (type == LogType.Warning && !_includeWarnings) return;
+
             // Stack traces only for the log types where they carry information — otherwise a log
             // buffer of 200 lines becomes 200 pages of Unity internals.
             bool wantStack = type == LogType.Exception || type == LogType.Error || type == LogType.Assert;

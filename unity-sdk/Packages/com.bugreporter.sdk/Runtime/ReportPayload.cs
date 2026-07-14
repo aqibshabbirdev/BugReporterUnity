@@ -12,6 +12,8 @@ namespace BugReporter
         public string description;
         public string severity;
         public string buildVersion;
+        public string game;
+        public string scene;
         public string logs;
         public Dictionary<string, object> metadata;
         public DeviceInfo device;
@@ -25,6 +27,8 @@ namespace BugReporter
             Field(sb, "description", description); sb.Append(',');
             Field(sb, "severity", severity); sb.Append(',');
             Field(sb, "buildVersion", buildVersion); sb.Append(',');
+            Field(sb, "game", game); sb.Append(',');
+            Field(sb, "scene", scene); sb.Append(',');
             Field(sb, "platform", device.platform); sb.Append(',');
             Field(sb, "deviceModel", device.deviceModel); sb.Append(',');
             Field(sb, "osVersion", device.osVersion); sb.Append(',');

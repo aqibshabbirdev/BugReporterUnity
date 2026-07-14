@@ -19,6 +19,13 @@ namespace BugReporter
         public string BuildVersion;
 
         /// <summary>
+        /// Which game this report belongs to. One project (one API key) can host many games — set this so the
+        /// dashboard can group/filter issues per game instead of one mixed pile. Value here is the starting
+        /// game; call <see cref="BugReporter.SetGame"/> at runtime whenever the active game changes.
+        /// </summary>
+        public string GameId;
+
+        /// <summary>
         /// Master switch. Leave as <c>Debug.isDebugBuild</c> so the reporter can never reach a release build —
         /// the overlay button, the log hook and the network calls all hang off this.
         /// </summary>
@@ -26,6 +33,13 @@ namespace BugReporter
 
         /// <summary>How many of the most recent log lines travel with a report.</summary>
         public int LogBufferSize = 200;
+
+        /// <summary>
+        /// Capture <c>Debug.LogWarning</c> lines in the log buffer. Off by default: warnings routinely flood the
+        /// buffer with 100+ lines of noise and push the actual error out of the ring. Errors, asserts and
+        /// exceptions are always captured regardless.
+        /// </summary>
+        public bool IncludeWarnings = false;
 
         /// <summary>Draw the floating report button. Off if you want to trigger reports from your own UI.</summary>
         public bool ShowReportButton = true;

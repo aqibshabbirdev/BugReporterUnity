@@ -84,6 +84,7 @@ export default function IssueDetail() {
         </div>
       </div>
       <div className="muted small" style={{ marginBottom: 18 }}>
+        {issue.game && <><span className="mono">{issue.game}</span> · </>}
         build <span className="mono">{issue.build_version}</span> · {issue.device_model || 'unknown device'} ·{' '}
         {issue.os_version} · {issue.screen_resolution} · {issue.memory_mb} MB · reported {fmtTime(issue.created_at)}
       </div>

@@ -61,16 +61,43 @@ static void InitBugReporter()
         ApiKey   = "br_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",   // per-project, from the dashboard
         Endpoint = "https://bugreporterunity.wasmer.app/api/report",
         Enabled  = true,          // gate on your own dev flag for release builds
-        BuildTag = Application.version,
+        BuildVersion = Application.version,
+        GameId   = "Hub",         // starting game; change it at runtime with SetGame (see below)
+        // IncludeWarnings = false // default — warnings are dropped from the log buffer (see §3.1)
     });
 }
 ```
+
+### Many games, one key — automatic per game
+One project = one API key, but a hub app ships **many games** under it. Without a game tag every report
+lands in one mixed pile. This resolves itself with **zero per-game wiring**:
+
+- The SDK stamps every report with the **active scene's asset path** (`SceneManager.GetActiveScene().path`,
+  e.g. `Assets/_Games/CRICKET/Scene/Ground.unity` — the path survives into builds).
+- The backend derives the game from the folder right after `_Games/` (`ingest._game_from_scene`) and maps it
+  to a display name (`CRICKET → Cricket`, `8Ball pool → 8 Ball Pool`, …). It's a folder-segment match, **not**
+  a plain substring — so `Car` doesn't get swallowed by `Carrom`. Unknown folders pass through as-is, so a
+  **new game appears in the dashboard with no code change** (add a row in `_GAME_NAMES` only to prettify the label).
+
+The dashboard then shows a **game filter** (like the build filter) so each game's issues are a separate list.
+Scenes outside `_Games/` (Login, Loading, Connection) carry no game and show as `—`. A few scenes whose folder
+would mislabel them are special-cased in `_SCENE_OVERRIDES` (checked first) — e.g. the app's global lobby
+lives under the 8Ball pool folder but is tagged **Lobby**, not 8 Ball Pool.
+
+**Optional manual override — `SetGame`:** if you ever need to label a report explicitly (a game not laid out
+under `_Games/`, or a custom label), call `BugReporter.SetGame("Cricket")`. When set, the server prefers it
+over the scene-derived value; it sticks until the next call. Most integrations won't need it.
+
+### 3.1 Log noise — warnings are excluded by default
+`Debug.LogWarning` lines are **not** captured in the report's log buffer — a single frame can emit dozens
+and shove the real error out of the 200-line ring. Errors, asserts and exceptions are always kept. Flip
+`IncludeWarnings = true` in the config if you actually need them.
 
 Runtime pieces (`unity-sdk/Packages/com.bugreporter.sdk/Runtime/`):
 - `BugReporter.cs` — entry; trims/validates the key (`br_` prefix enforced — a leading typo like
   `bbr_` silently 401s otherwise; this bit us once).
 - `LogBuffer.cs` — thread-safe ring buffer of recent `Debug.Log*` lines (captured via
-  `Application.logMessageReceivedThreaded`).
+  `Application.logMessageReceivedThreaded`). Warnings are dropped unless `IncludeWarnings = true` (§3.1).
 - `ReportOverlay.cs` — the on-screen "Report" button + note field (OnGUI, no scene objects needed).
 - `ReportSender.cs` — end-of-frame screenshot capture, multipart upload, retry, offline disk queue
   (queued reports send on next launch).
@@ -116,6 +143,12 @@ BUILD you hand testers — in-editor presence isn't enough for the Android build
 3. `pw_hash` column is `VARCHAR(200)` — werkzeug scrypt hashes are ~161 chars; the original 160
    truncated them and **every login failed** ("wrong email or password" on correct creds).
 
+### Schema migrations
+`CREATE TABLE IF NOT EXISTS` never alters an existing table, so any **column added after the first
+deploy** goes in `db._migrate()` (runs every boot; each step must be idempotent). It checks
+`information_schema` before `ALTER` because MySQL — unlike MariaDB — has no `ADD COLUMN IF NOT EXISTS`.
+The `issues.game` column (per-game filtering) landed this way; existing rows backfill to `''`.
+
 ## 5. Backend API surface
 
 Ingest (API-key auth via `X-Api-Key`):
@@ -125,7 +158,8 @@ Ingest (API-key auth via `X-Api-Key`):
 Dashboard (session cookie; scrypt-hashed passwords; invite-code registration):
 - `POST /api/auth/register` (needs `BR_INVITE_CODE`) / `login` / `logout`, `GET /api/auth/me`
 - `GET|POST /api/projects`, `POST /api/projects/<pid>/rotate-key`
-- `GET /api/projects/<pid>/issues`, `GET /api/projects/<pid>/builds`
+- `GET /api/projects/<pid>/issues` — filters: `?build=`, `?game=`, `?status=`
+- `GET /api/projects/<pid>/builds`, `GET /api/projects/<pid>/games` (games with issue/open counts, for the filter)
 - `GET|PATCH /api/issues/<iid>`, `POST /api/issues/<iid>/comments`
 - `GET /api/issues/<iid>/screenshot.jpg`, `GET /api/issues/<iid>/logs.txt`
 - `GET /api/health` — DB/env diagnostics
@@ -170,9 +204,14 @@ Dashboard access needs an account — registration requires the invite code (`BR
 | No Report button on device | SDK `Enabled` flag + the boot script actually in that BUILD |
 | Registration rejected | `BR_INVITE_CODE` env set and code matches |
 
-## 10. State as of 2026-07-13
+## 10. State as of 2026-07-14
 
 - Deployed and working end-to-end: SDK → ingest → MySQL → dashboard.
 - Integrated in the GamesPanda client (dev-gated); tested from Unity editor and Android.
+- **Per-game separation** (auto scene→game / `game` column / dashboard game filter) and **warning exclusion**
+  (`IncludeWarnings`, default off) added 2026-07-14 — one API key across ~10 games no longer mixes issues,
+  and log buffers aren't drowned in warnings. The game is derived from the active scene's `_Games/<Folder>/`
+  path with no per-game wiring (`SetGame` is an optional override). Backend needs a redeploy (auto `issues.game`
+  migration on boot); testers need a rebuilt client (any build with the updated SDK).
 - Open items: key + DB credential rotation (§8); dashboard invite for additional testers
   (set/share `BR_INVITE_CODE`); optional niceties from PLAN.md (email notify, issue dedup rules).
