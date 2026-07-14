@@ -3,6 +3,79 @@ import { useParams } from 'react-router-dom'
 import { api, fmtTime, IssueDetail as Detail } from '../api'
 import { Severity, Status } from '../components/Badges'
 
+// ── Unity rich text ──────────────────────────────────────────────────────────
+// Game logs arrive with Unity's console markup (<color=…>, <b>, <i>, <u>, <size=…>). We render it as
+// real styling instead of raw tags. Input is untrusted log text, so we NEVER use innerHTML — every text
+// node goes through React (auto-escaped); tags only ever become inline style, never markup.
+const UNITY_COLORS: Record<string, string> = {
+  red: '#f85149', green: '#3fb950', lime: '#7ee787', blue: '#4493f8', navy: '#4493f8',
+  cyan: '#39c5cf', aqua: '#39c5cf', teal: '#39c5cf', yellow: '#e3b341', orange: '#f0883e',
+  magenta: '#f778ba', fuchsia: '#f778ba', purple: '#bc8cff', white: '#e6edf3', silver: '#c9d1d9',
+  grey: '#8b949e', gray: '#8b949e', black: '#6e7681', maroon: '#f85149', olive: '#d29922', brown: '#d29922',
+}
+function resolveColor(raw: string): string | undefined {
+  const c = raw.trim().replace(/^["']|["']$/g, '')
+  if (!c) return undefined
+  return c[0] === '#' ? c : (UNITY_COLORS[c.toLowerCase()] ?? c)
+}
+
+interface Seg { text: string; bold: boolean; italic: boolean; underline: boolean; color?: string }
+const RICH_RE = /<(\/?)(b|i|u|color|size)(?:=([^>]*))?>/gi
+function parseRich(line: string): Seg[] {
+  const segs: Seg[] = []
+  let bold = 0, italic = 0, underline = 0
+  const colors: string[] = []
+  let last = 0
+  let m: RegExpExecArray | null
+  RICH_RE.lastIndex = 0
+  const push = (t: string) => {
+    if (t) segs.push({ text: t, bold: bold > 0, italic: italic > 0, underline: underline > 0, color: colors[colors.length - 1] || undefined })
+  }
+  while ((m = RICH_RE.exec(line))) {
+    push(line.slice(last, m.index))
+    last = RICH_RE.lastIndex
+    const close = m[1] === '/'
+    switch (m[2].toLowerCase()) {
+      case 'b': bold = Math.max(0, bold + (close ? -1 : 1)); break
+      case 'i': italic = Math.max(0, italic + (close ? -1 : 1)); break
+      case 'u': underline = Math.max(0, underline + (close ? -1 : 1)); break
+      case 'color': if (close) colors.pop(); else colors.push(resolveColor(m[3] ?? '') ?? ''); break
+      // <size=…> is consumed (so the tag doesn't show) but we don't scale log text
+    }
+  }
+  push(line.slice(last))
+  return segs
+}
+
+function highlight(text: string, needle: string): React.ReactNode[] {
+  if (!needle) return [text]
+  const out: React.ReactNode[] = []
+  const lower = text.toLowerCase()
+  let i = 0, k = 0, idx: number
+  while ((idx = lower.indexOf(needle, i)) !== -1) {
+    if (idx > i) out.push(text.slice(i, idx))
+    out.push(<mark key={k++}>{text.slice(idx, idx + needle.length)}</mark>)
+    i = idx + needle.length
+  }
+  out.push(text.slice(i))
+  return out
+}
+
+function RichLine({ text, needle }: { text: string; needle: string }) {
+  return (
+    <>
+      {parseRich(text).map((s, i) => (
+        <span key={i} style={{
+          fontWeight: s.bold ? 700 : undefined,
+          fontStyle: s.italic ? 'italic' : undefined,
+          textDecoration: s.underline ? 'underline' : undefined,
+          color: s.color,
+        }}>{highlight(s.text, needle)}</span>
+      ))}
+    </>
+  )
+}
+
 function LogViewer({ iid }: { iid: string }) {
   const [text, setText] = useState<string | null>(null)
   const [q, setQ] = useState('')
@@ -38,12 +111,7 @@ function LogViewer({ iid }: { iid: string }) {
           if (needle && !l.toLowerCase().includes(needle)) return null
           const cls = /\[(Exception|Error|Assert)\]/.test(l) ? 'err'
                     : /\[Warning\]/.test(l) ? 'warn' : ''
-          let content: React.ReactNode = l
-          if (needle) {
-            const i = l.toLowerCase().indexOf(needle)
-            content = <>{l.slice(0, i)}<mark>{l.slice(i, i + needle.length)}</mark>{l.slice(i + needle.length)}</>
-          }
-          return <div key={n} className={`ln ${cls}`}>{content}</div>
+          return <div key={n} className={`ln ${cls}`}><RichLine text={l} needle={needle} /></div>
         })}
         <div ref={endRef} />
       </div>
