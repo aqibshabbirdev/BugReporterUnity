@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { api, fmtTime, IssueDetail as Detail } from '../api'
 import { Severity, Status } from '../components/Badges'
 
@@ -121,6 +121,7 @@ function LogViewer({ iid }: { iid: string }) {
 
 export default function IssueDetail() {
   const { iid = '' } = useParams()
+  const nav = useNavigate()
   const [issue, setIssue] = useState<Detail | null>(null)
   const [zoom, setZoom] = useState(false)
   const [fixedIn, setFixedIn] = useState('')
@@ -156,6 +157,26 @@ export default function IssueDetail() {
         build <span className="mono">{issue.build_version}</span> · {issue.device_model || 'unknown device'} ·{' '}
         {issue.os_version} · {issue.screen_resolution} · {issue.memory_mb} MB · reported {fmtTime(issue.created_at)}
       </div>
+
+      {issue.siblings.length > 0 && (
+        <div className="card pad linked" style={{ marginBottom: 14 }}>
+          <label>🔗 Same multiplayer session — {issue.siblings.length} other device{issue.siblings.length > 1 ? 's' : ''}</label>
+          <div className="sib-list">
+            {issue.siblings.map(s => (
+              <div key={s.id} className={`sib row-${s.severity}`} onClick={() => nav(`/i/${s.id}`)}>
+                {s.has_screenshot > 0
+                  ? <img className="sib-thumb" src={api.thumbUrl(s.id)} loading="lazy" alt="" />
+                  : <div className="sib-thumb placeholder">🐞</div>}
+                <div className="sib-body">
+                  <div className="sib-title">{s.title}</div>
+                  <div className="muted small">{s.device_model || 'unknown device'} · {s.platform ?? '—'} · {fmtTime(s.created_at)}</div>
+                  <div className="row" style={{ gap: 6, marginTop: 4 }}><Severity v={s.severity} /><Status v={s.status} /></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {issue.description && <div className="card pad" style={{ marginBottom: 14 }}>{issue.description}</div>}
 

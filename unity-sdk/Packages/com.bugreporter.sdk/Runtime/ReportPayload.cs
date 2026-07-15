@@ -13,6 +13,7 @@ namespace BugReporter
         public string severity;
         public string buildVersion;
         public string game;
+        public string session;
         public string scene;
         public string logs;
         public Dictionary<string, object> metadata;
@@ -28,6 +29,7 @@ namespace BugReporter
             Field(sb, "severity", severity); sb.Append(',');
             Field(sb, "buildVersion", buildVersion); sb.Append(',');
             Field(sb, "game", game); sb.Append(',');
+            Field(sb, "session", session); sb.Append(',');
             Field(sb, "scene", scene); sb.Append(',');
             Field(sb, "platform", device.platform); sb.Append(',');
             Field(sb, "deviceModel", device.deviceModel); sb.Append(',');

@@ -120,6 +120,7 @@ def report():
     build_version = str(body.get("buildVersion") or "unknown")[:50]
     # Prefer an explicit game (SetGame) if the SDK sent one; otherwise derive it from the active scene.
     game = str(body.get("game") or "")[:80] or _game_from_scene(str(body.get("scene") or ""))
+    session = str(body.get("session") or "")[:80]
     severity = body.get("severity")
     if severity not in ("low", "normal", "high", "crash"):
         severity = "normal"
@@ -160,13 +161,13 @@ def report():
     with db.connect() as conn:
         conn.execute(
             """INSERT INTO issues (id, project_id, title, description, severity, status,
-                   build_version, game, platform, device_model, os_version, screen_resolution,
+                   build_version, game, session, platform, device_model, os_version, screen_resolution,
                    memory_mb, metadata, has_screenshot, has_logs, created_at, updated_at)
-               VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 issue_id, project["id"], title,
                 str(body.get("description") or "")[:2000],
-                severity, build_version, game, platform,
+                severity, build_version, game, session, platform,
                 str(body.get("deviceModel") or "")[:80],
                 str(body.get("osVersion") or "")[:80],
                 str(body.get("screenResolution") or "")[:20],

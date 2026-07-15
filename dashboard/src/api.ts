@@ -33,8 +33,12 @@ export interface Game {
 }
 export interface IssueRow {
   id: string; title: string; severity: string; status: string
-  fixed_in_build: string | null; build_version: string; game: string; platform: string | null
+  fixed_in_build: string | null; build_version: string; game: string; session: string; platform: string | null
   has_screenshot: number; created_at: number
+}
+export interface Sibling {
+  id: string; title: string; severity: string; status: string
+  platform: string | null; device_model: string; has_screenshot: number; created_at: number
 }
 export interface IssueDetail extends IssueRow {
   description: string; device_model: string; os_version: string
@@ -42,6 +46,7 @@ export interface IssueDetail extends IssueRow {
   metadata: Record<string, unknown>
   has_screenshot: number; has_logs: number; updated_at: number
   comments: { author: string; text: string; created_at: number }[]
+  siblings: Sibling[]
 }
 
 export const api = {

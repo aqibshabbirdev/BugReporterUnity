@@ -28,10 +28,13 @@ namespace BugReporter
         private static readonly Dictionary<string, object> _metadata = new Dictionary<string, object>();
         private static readonly object _gameLock = new object();
         private static string _game = string.Empty;
+        private static readonly object _sessionLock = new object();
+        private static string _session = string.Empty;
 
         public static bool IsActive => _config != null && _config.Enabled;
         internal static BugReporterConfig Config => _config;
         internal static string CurrentGame { get { lock (_gameLock) return _game; } }
+        internal static string CurrentSession { get { lock (_sessionLock) return _session; } }
 
         public static void Init(BugReporterConfig config)
         {
@@ -100,6 +103,17 @@ namespace BugReporter
         }
 
         /// <summary>
+        /// Tag every subsequent report with the multiplayer match/session it belongs to. Call this with the
+        /// SAME id on every device in the match (e.g. the server's transaction/match id) when the match starts,
+        /// and pass null/empty when it ends. Reports sharing a session are linked on the dashboard, so a bug
+        /// filed from both devices shows as one incident with each device's logs/screenshot side by side.
+        /// </summary>
+        public static void SetSession(string sessionId)
+        {
+            lock (_sessionLock) { _session = sessionId?.Trim() ?? string.Empty; }
+        }
+
+        /// <summary>
         /// File a report. Captures a screenshot and the current log buffer, then uploads (with retry, and a
         /// disk queue if offline). Returns immediately — the work runs on a coroutine.
         /// </summary>
@@ -125,6 +139,7 @@ namespace BugReporter
                 severity     = severity.ToString().ToLowerInvariant(),
                 buildVersion = _config.BuildVersion,
                 game         = CurrentGame,
+                session      = CurrentSession,
                 scene        = scenePath,
                 logs         = _logs != null ? _logs.Dump() : string.Empty,
                 metadata     = meta,

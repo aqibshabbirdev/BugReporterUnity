@@ -157,7 +157,7 @@ def rotate_key(pid):
 @bp.get("/api/projects/<pid>/issues")
 @require_user
 def list_issues(pid):
-    q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, platform, has_screenshot, created_at FROM issues WHERE project_id = ?"
+    q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, session, platform, has_screenshot, created_at FROM issues WHERE project_id = ?"
     params: list = [pid]
     if request.args.get("build"):
         q += " AND build_version = ?"; params.append(request.args["build"])
@@ -181,9 +181,19 @@ def issue_detail(iid):
         comments = conn.execute(
             "SELECT author, text, created_at FROM comments WHERE issue_id = ? ORDER BY created_at", (iid,)
         ).fetchall()
+        # Same multiplayer session, other devices — the other half/halves of one incident.
+        siblings = []
+        if row["session"]:
+            siblings = conn.execute(
+                """SELECT id, title, severity, status, platform, device_model, has_screenshot, created_at
+                   FROM issues WHERE project_id = ? AND session = ? AND id <> ?
+                   ORDER BY created_at""",
+                (row["project_id"], row["session"], iid),
+            ).fetchall()
     out = dict(row)
     out["metadata"] = json.loads(out["metadata"] or "{}")
     out["comments"] = [dict(c) for c in comments]
+    out["siblings"] = [dict(s) for s in siblings]
     return jsonify(out)
 
 

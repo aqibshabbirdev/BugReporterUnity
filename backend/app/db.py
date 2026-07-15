@@ -129,6 +129,7 @@ _SCHEMA = [
         fixed_in_build    VARCHAR(50),
         build_version     VARCHAR(50) NOT NULL,
         game              VARCHAR(80) NOT NULL DEFAULT '',
+        session           VARCHAR(80) NOT NULL DEFAULT '',
         platform          VARCHAR(40),
         device_model      VARCHAR(80),
         os_version        VARCHAR(80),
@@ -141,7 +142,8 @@ _SCHEMA = [
         updated_at        BIGINT NOT NULL,
         KEY idx_issues_project_created (project_id, created_at),
         KEY idx_issues_project_build   (project_id, build_version),
-        KEY idx_issues_project_game    (project_id, game)
+        KEY idx_issues_project_game    (project_id, game),
+        KEY idx_issues_project_session (project_id, session)
     )""",
     """CREATE TABLE IF NOT EXISTS comments (
         id         VARCHAR(32) PRIMARY KEY,
@@ -175,6 +177,15 @@ def _migrate(conn):
     if not has_game:
         conn.execute("ALTER TABLE issues ADD COLUMN game VARCHAR(80) NOT NULL DEFAULT '' AFTER build_version")
         conn.execute("ALTER TABLE issues ADD KEY idx_issues_project_game (project_id, game)")
+
+    # issues.session — links the per-device reports of one multiplayer incident.
+    has_session = conn.execute(
+        """SELECT COUNT(*) c FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = 'issues' AND column_name = 'session'"""
+    ).fetchone()["c"]
+    if not has_session:
+        conn.execute("ALTER TABLE issues ADD COLUMN session VARCHAR(80) NOT NULL DEFAULT '' AFTER game")
+        conn.execute("ALTER TABLE issues ADD KEY idx_issues_project_session (project_id, session)")
 
 
 def now() -> int:

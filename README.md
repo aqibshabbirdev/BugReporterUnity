@@ -88,6 +88,18 @@ lives under the 8Ball pool folder but is tagged **Lobby**, not 8 Ball Pool.
 under `_Games/`, or a custom label), call `BugReporter.SetGame("Cricket")`. When set, the server prefers it
 over the scene-derived value; it sticks until the next call. Most integrations won't need it.
 
+### Multiplayer — link both devices to one incident
+A networked bug has two sides: each device has its own logs, screenshot and state, so a tester files it
+from **both** devices. To stop those becoming two unrelated issues, tag every report with the shared
+match id — call `BugReporter.SetSession(...)` with the **same value on every device** when a match starts
+(the server's transaction/match id works well), and clear it (`SetSession(null)`) when it ends:
+```csharp
+BugReporter.SetSession(match.transactionId);   // same id on device 1 and device 2
+```
+Reports that share a session are linked: the issue detail page shows a **"Same multiplayer session — N other
+devices"** panel with the other device's report(s) (jump straight to their logs/screenshot), and the grid
+stamps a **🔗 linked** badge on those cards. Derivation is automatic from `issues.session`; no session → no link.
+
 ### 3.1 Log noise — warnings are excluded by default
 `Debug.LogWarning` lines are **not** captured in the report's log buffer — a single frame can emit dozens
 and shove the real error out of the 200-line ring. Errors, asserts and exceptions are always kept. Flip
@@ -160,7 +172,7 @@ Dashboard (session cookie; scrypt-hashed passwords; invite-code registration):
 - `GET|POST /api/projects`, `POST /api/projects/<pid>/rotate-key`
 - `GET /api/projects/<pid>/issues` — filters: `?build=`, `?game=`, `?status=`
 - `GET /api/projects/<pid>/builds`, `GET /api/projects/<pid>/games` (games with issue/open counts, for the filter)
-- `GET|PATCH /api/issues/<iid>`, `POST /api/issues/<iid>/comments`
+- `GET|PATCH /api/issues/<iid>` — detail includes `siblings` (other reports in the same session), `POST /api/issues/<iid>/comments`
 - `GET /api/issues/<iid>/screenshot.jpg`, `GET /api/issues/<iid>/logs.txt`
 - `GET /api/health` — DB/env diagnostics
 

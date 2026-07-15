@@ -168,6 +168,29 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .issue-meta { display: flex; gap: 6px; flex-wrap: wrap; }
 .issue-foot { color: var(--muted); font-size: 11.5px; }
 
+/* linked multiplayer sessions */
+.issue-card { position: relative; }
+.link-badge {
+  position: absolute; top: 8px; right: 8px; z-index: 1;
+  background: rgba(13,17,23,.82); backdrop-filter: blur(4px); border: 1px solid var(--accent);
+  color: #79b8ff; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+}
+.card.linked { border-color: rgba(68,147,248,.4); }
+.sib-list { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.sib {
+  display: flex; gap: 12px; align-items: center; padding: 8px; border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--border); border-radius: 8px; cursor: pointer; transition: background .1s, border-color .12s;
+}
+.sib:hover { background: var(--bg-hover); border-color: var(--faint); }
+.sib.row-crash  { border-left-color: var(--red); }
+.sib.row-high   { border-left-color: var(--orange); }
+.sib.row-normal { border-left-color: var(--accent); }
+.sib.row-low    { border-left-color: var(--faint); }
+.sib-thumb { width: 52px; height: 68px; object-fit: cover; object-position: center top; border-radius: 6px; background: #0a0d12; flex: none; }
+.sib-thumb.placeholder { display: flex; align-items: center; justify-content: center; font-size: 20px; }
+.sib-body { min-width: 0; }
+.sib-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+
 /* project cards */
 .proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
 .proj-card {
