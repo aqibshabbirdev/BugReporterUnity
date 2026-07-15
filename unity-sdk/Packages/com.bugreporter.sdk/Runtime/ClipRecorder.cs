@@ -92,7 +92,7 @@ namespace BugReporter
                     {
                         var data = req.GetData<byte>();
                         var jpg = ImageConversion.EncodeNativeArrayToJPG(
-                            data, GraphicsFormat.R8G8B8A8_UNorm, (uint)tw, (uint)th, 0, (uint)_quality);
+                            data, GraphicsFormat.R8G8B8A8_UNorm, (uint)tw, (uint)th, 0, _quality);
                         byte[] bytes = jpg.ToArray();
                         jpg.Dispose();
                         Push(bytes);
