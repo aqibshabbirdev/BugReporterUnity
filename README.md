@@ -145,6 +145,7 @@ BUILD you hand testers — in-editor presence isn't enough for the Android build
 | `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USERNAME` / `DB_PASSWORD` | injected by the Wasmer MySQL add-on |
 | `BR_DB_*` variants / `DB_URL` / `DB_USER` | accepted fallbacks in `db.py` (checked in that order) |
 | `BR_INVITE_CODE` | registration is invite-only; a would-be dashboard user needs this code |
+| `BR_DELETE_CODE` | confirm password for deleting an issue (dashboard → issue → Danger zone). Defaults to `Queen@21`; set a private value here |
 
 ### WASIX gotchas (cost us real debugging time)
 1. `import pymysql` calls `getpass.getuser()` → **OSError on WASIX** unless a `USER` env var exists.

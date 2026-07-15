@@ -126,6 +126,10 @@ export default function IssueDetail() {
   const [zoom, setZoom] = useState(false)
   const [fixedIn, setFixedIn] = useState('')
   const [comment, setComment] = useState('')
+  const [delOpen, setDelOpen] = useState(false)
+  const [delCode, setDelCode] = useState('')
+  const [delErr, setDelErr] = useState('')
+  const [deleting, setDeleting] = useState(false)
 
   const load = () => { api.issue(iid).then(setIssue).catch(() => {}) }
   useEffect(load, [iid])
@@ -141,6 +145,17 @@ export default function IssueDetail() {
     await api.comment(iid, comment.trim())
     setComment('')
     load()
+  }
+  const doDelete = async () => {
+    if (!issue) return
+    setDeleting(true); setDelErr('')
+    try {
+      await api.deleteIssue(iid, delCode)
+      nav(`/p/${issue.project_id}`)
+    } catch (e) {
+      setDelErr(e instanceof Error ? e.message : 'delete failed')
+      setDeleting(false)
+    }
   }
 
   return (
@@ -235,6 +250,29 @@ export default function IssueDetail() {
                  onKeyDown={e => e.key === 'Enter' && addComment()} style={{ flex: 1 }} />
           <button className="primary" onClick={addComment}>Comment</button>
         </div>
+      </div>
+
+      <div className="card pad danger-zone" style={{ marginTop: 14 }}>
+        <label>Danger zone</label>
+        {!delOpen ? (
+          <button className="danger" onClick={() => setDelOpen(true)}>🗑 Delete this issue</button>
+        ) : (
+          <>
+            <div className="muted small" style={{ marginBottom: 8 }}>
+              This permanently removes the report, its screenshot and logs. Enter the delete password to confirm.
+            </div>
+            <div className="row">
+              <input type="password" placeholder="Delete password" value={delCode} autoFocus
+                     onChange={e => setDelCode(e.target.value)}
+                     onKeyDown={e => e.key === 'Enter' && !deleting && doDelete()} style={{ flex: 1, maxWidth: 240 }} />
+              <button className="danger" onClick={doDelete} disabled={deleting || !delCode}>
+                {deleting ? 'Deleting…' : 'Confirm delete'}
+              </button>
+              <button onClick={() => { setDelOpen(false); setDelCode(''); setDelErr('') }} disabled={deleting}>Cancel</button>
+            </div>
+          </>
+        )}
+        {delErr && <div className="error" style={{ marginTop: 8 }}>{delErr}</div>}
       </div>
     </div>
   )

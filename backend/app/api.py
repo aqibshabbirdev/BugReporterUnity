@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import secrets
+import shutil
 
 from flask import Blueprint, g, jsonify, request, send_file
 
@@ -211,6 +212,25 @@ def update_issue(iid):
             (status, fixed_in, db.now(), iid)).rowcount
     if not changed:
         return jsonify(error="not found"), 404
+    return jsonify(ok=True)
+
+
+@bp.delete("/api/issues/<iid>")
+@require_user
+def delete_issue(iid):
+    # Deletion is guarded by a confirm code on top of the login, so a stray click can't wipe a report.
+    # Default is "Queen@21"; override with the BR_DELETE_CODE env var for a private one.
+    code = str((request.get_json(silent=True) or {}).get("code") or "")
+    if code != os.environ.get("BR_DELETE_CODE", "Queen@21"):
+        return jsonify(error="wrong delete password"), 403
+    with db.connect() as conn:
+        row = conn.execute("SELECT project_id FROM issues WHERE id = ?", (iid,)).fetchone()
+        if row is None:
+            return jsonify(error="not found"), 404
+        conn.execute("DELETE FROM comments WHERE issue_id = ?", (iid,))
+        conn.execute("DELETE FROM issues WHERE id = ?", (iid,))
+    # Best-effort file cleanup — the DB row is already gone, so a failed unlink just leaves orphaned bytes.
+    shutil.rmtree(os.path.join(UPLOAD_ROOT, row["project_id"], iid), ignore_errors=True)
     return jsonify(ok=True)
 
 

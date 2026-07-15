@@ -41,6 +41,7 @@ export interface Sibling {
   platform: string | null; device_model: string; has_screenshot: number; created_at: number
 }
 export interface IssueDetail extends IssueRow {
+  project_id: string
   description: string; device_model: string; os_version: string
   screen_resolution: string; memory_mb: number
   metadata: Record<string, unknown>
@@ -78,6 +79,8 @@ export const api = {
     }),
   comment: (iid: string, text: string) =>
     req<{ ok: boolean }>(`/api/issues/${iid}/comments`, { method: 'POST', body: JSON.stringify({ text }) }),
+  deleteIssue: (iid: string, code: string) =>
+    req<{ ok: boolean }>(`/api/issues/${iid}`, { method: 'DELETE', body: JSON.stringify({ code }) }),
 
   builds: (pid: string) => req<Build[]>(`/api/projects/${pid}/builds`),
   games: (pid: string) => req<Game[]>(`/api/projects/${pid}/games`),
