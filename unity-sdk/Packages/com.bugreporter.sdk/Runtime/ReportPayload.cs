@@ -16,6 +16,7 @@ namespace BugReporter
         public string session;
         public string scene;
         public string logs;
+        public byte[] clip;   // packed clip frames (uploaded as a binary part, not in the JSON)
         public Dictionary<string, object> metadata;
         public DeviceInfo device;
 

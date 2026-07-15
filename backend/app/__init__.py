@@ -9,7 +9,7 @@ from . import db
 def create_app() -> Flask:
     static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
     app = Flask(__name__, static_folder=None)
-    app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 * 1024  # hard cap on any request body
+    app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # hard cap on any request body (clips push size up)
 
     # Never die at startup on a DB problem — come up, serve /api/health with the reason, and retry
     # the schema init lazily on the next request. A crashed worker gives an opaque edge 500; a live

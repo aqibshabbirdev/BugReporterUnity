@@ -100,6 +100,24 @@ Reports that share a session are linked: the issue detail page shows a **"Same m
 devices"** panel with the other device's report(s) (jump straight to their logs/screenshot), and the grid
 stamps a **🔗 linked** badge on those cards. Derivation is automatic from `issues.session`; no session → no link.
 
+### Clip recording — the last N seconds as a flipbook
+A report can carry a short clip of what led to the bug. It's **off by default** (`RecordClip`) because it
+captures the screen continuously — a small but real perf/battery cost, so keep it to tester builds:
+```csharp
+BugReporter.Init(new BugReporterConfig {
+    /* … */
+    RecordClip = ConstantsData_M.MpVerboseLogs,   // tester-only
+    ClipSeconds = 20, ClipFps = 6, ClipMaxWidth = 360, ClipQuality = 45,
+});
+```
+How it works: `ClipRecorder` keeps a rolling ring of the last `ClipSeconds × ClipFps` frames — each a
+downscaled JPEG captured via `ScreenCapture.CaptureScreenshotIntoRenderTexture` + **async GPU readback**
+(so it doesn't stall the render thread; needs `SystemInfo.supportsAsyncGPUReadback`, else it no-ops). On a
+report the frames are packed into one blob (`[u32 count][u32 len]×count][bytes…]`), uploaded as the `clip`
+part, split back into `clip/000.jpg…` on ingest, and the dashboard plays them as a flipbook on the issue page.
+Last ~20s at 6fps ≈ 1–3 MB. **Not device-validated yet** — if the clip is upside-down on a device, set
+`ClipFlipY = true`.
+
 ### 3.1 Log noise — warnings are excluded by default
 `Debug.LogWarning` lines are **not** captured in the report's log buffer — a single frame can emit dozens
 and shove the real error out of the 200-line ring. Errors, asserts and exceptions are always kept. Flip

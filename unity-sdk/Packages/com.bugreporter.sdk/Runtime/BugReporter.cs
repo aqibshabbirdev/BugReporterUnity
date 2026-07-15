@@ -25,6 +25,7 @@ namespace BugReporter
         private static BugReporterConfig _config;
         private static LogBuffer _logs;
         private static ReportSender _sender;
+        private static ClipRecorder _clip;
         private static readonly Dictionary<string, object> _metadata = new Dictionary<string, object>();
         private static readonly object _gameLock = new object();
         private static string _game = string.Empty;
@@ -71,6 +72,7 @@ namespace BugReporter
             lock (_gameLock) { _game = config.GameId?.Trim() ?? string.Empty; }
             _logs   = new LogBuffer(config.LogBufferSize, config.IncludeWarnings);
             _sender = ReportSender.Create();
+            if (config.RecordClip) _clip = ClipRecorder.Create();
 
             if (config.ShowReportButton) ReportOverlay.Create();
 
@@ -142,6 +144,7 @@ namespace BugReporter
                 session      = CurrentSession,
                 scene        = scenePath,
                 logs         = _logs != null ? _logs.Dump() : string.Empty,
+                clip         = _clip != null ? _clip.PackLatest() : null,
                 metadata     = meta,
                 device       = DeviceInfo.Capture(),
             });

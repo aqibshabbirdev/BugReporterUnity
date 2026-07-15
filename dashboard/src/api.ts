@@ -88,6 +88,8 @@ export const api = {
   logsUrl: (iid: string) => `/api/issues/${iid}/logs.txt`,
   screenshotUrl: (iid: string) => `/api/issues/${iid}/screenshot.jpg`,
   thumbUrl: (iid: string) => `/api/issues/${iid}/thumb.jpg`,
+  clipMeta: (iid: string) => req<{ frames: number }>(`/api/issues/${iid}/clip`),
+  clipFrameUrl: (iid: string, n: number) => `/api/issues/${iid}/clip/${n}.jpg`,
 }
 
 export const fmtTime = (unix: number) => {

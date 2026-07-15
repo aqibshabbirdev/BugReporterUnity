@@ -55,7 +55,7 @@ namespace BugReporter
                 Debug.LogWarning($"[BugReporter] Screenshot capture failed ({e.Message}) — sending report without it.");
             }
 
-            yield return Send(payload.ToJson(), payload.logs, screenshot, thumbnail, allowQueue: true);
+            yield return Send(payload.ToJson(), payload.logs, screenshot, thumbnail, payload.clip, allowQueue: true);
         }
 
         /// <summary>Downscale a screenshot to a small JPEG (longest side ≤ maxDim) via a GPU blit — cheap, and the
@@ -86,7 +86,7 @@ namespace BugReporter
             }
         }
 
-        private IEnumerator Send(string json, string logs, byte[] screenshot, byte[] thumbnail, bool allowQueue)
+        private IEnumerator Send(string json, string logs, byte[] screenshot, byte[] thumbnail, byte[] clip, bool allowQueue)
         {
             for (int attempt = 1; attempt <= MaxRetries; attempt++)
             {
@@ -100,6 +100,8 @@ namespace BugReporter
                     form.Add(new MultipartFormFileSection("screenshot", screenshot, "screenshot.jpg", "image/jpeg"));
                 if (thumbnail != null && thumbnail.Length > 0)
                     form.Add(new MultipartFormFileSection("thumbnail", thumbnail, "thumb.jpg", "image/jpeg"));
+                if (clip != null && clip.Length > 0)
+                    form.Add(new MultipartFormFileSection("clip", clip, "clip.bin", "application/octet-stream"));
 
                 using (var req = UnityWebRequest.Post(BugReporter.Config.Endpoint, form))
                 {
@@ -130,14 +132,14 @@ namespace BugReporter
             }
 
             if (allowQueue && BugReporter.Config.QueueFailedReports)
-                QueueToDisk(json, logs, screenshot, thumbnail);
+                QueueToDisk(json, logs, screenshot, thumbnail, clip);
         }
 
         // ── Offline queue ────────────────────────────────────────────────────────────────────────────
         // One folder per report so a partial write can be detected (report.json is written last, and is what
         // FlushQueue keys off).
 
-        private void QueueToDisk(string json, string logs, byte[] screenshot, byte[] thumbnail)
+        private void QueueToDisk(string json, string logs, byte[] screenshot, byte[] thumbnail, byte[] clip)
         {
             try
             {
@@ -146,6 +148,7 @@ namespace BugReporter
                 if (!string.IsNullOrEmpty(logs)) File.WriteAllText(Path.Combine(dir, "logs.txt"), logs);
                 if (screenshot != null) File.WriteAllBytes(Path.Combine(dir, "screenshot.jpg"), screenshot);
                 if (thumbnail != null) File.WriteAllBytes(Path.Combine(dir, "thumb.jpg"), thumbnail);
+                if (clip != null) File.WriteAllBytes(Path.Combine(dir, "clip.bin"), clip);
                 File.WriteAllText(Path.Combine(dir, "report.json"), json);   // last — the completion marker
                 Debug.Log("[BugReporter] Offline — report queued, will retry on next launch.");
             }
@@ -168,12 +171,14 @@ namespace BugReporter
                 string logsPath = Path.Combine(dir, "logs.txt");
                 string shotPath = Path.Combine(dir, "screenshot.jpg");
                 string thumbPath = Path.Combine(dir, "thumb.jpg");
+                string clipPath = Path.Combine(dir, "clip.bin");
                 string logs = File.Exists(logsPath) ? File.ReadAllText(logsPath) : null;
                 byte[] shot = File.Exists(shotPath) ? File.ReadAllBytes(shotPath) : null;
                 byte[] thumb = File.Exists(thumbPath) ? File.ReadAllBytes(thumbPath) : null;
+                byte[] clip = File.Exists(clipPath) ? File.ReadAllBytes(clipPath) : null;
 
                 // allowQueue:false — a queued report that fails again must not re-queue itself forever.
-                yield return Send(json, logs, shot, thumb, allowQueue: false);
+                yield return Send(json, logs, shot, thumb, clip, allowQueue: false);
                 TryDelete(dir);
             }
         }

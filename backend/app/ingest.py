@@ -15,6 +15,7 @@ key hash lookup, per-key rate limit, size caps, and it never trusts client filen
 """
 import json
 import os
+import struct
 import time
 
 from flask import Blueprint, current_app, jsonify, request
@@ -27,6 +28,38 @@ UPLOAD_ROOT = os.environ.get("BR_UPLOAD_DIR", "/data/uploads")
 MAX_LOG_BYTES = 512 * 1024          # 200 lines should be ~30KB; half a MB is generous
 MAX_SHOT_BYTES = 2 * 1024 * 1024    # jpeg q60 of a 1440p frame stays well under this
 MAX_THUMB_BYTES = 256 * 1024        # ~400px q55 preview the grid loads instead of the full frame
+MAX_CLIP_BYTES = 12 * 1024 * 1024   # packed flipbook frames (last ~20s at 6fps ≈ 1-3MB, capped generously)
+MAX_CLIP_FRAMES = 900
+
+
+def _unpack_clip(data: bytes):
+    """Split the SDK's packed clip blob — [u32 count][u32 len]×count][frame bytes…] (little-endian) —
+    back into individual JPEG frames. Returns [] on anything malformed (never raises to the caller)."""
+    try:
+        if len(data) < 4:
+            return []
+        (count,) = struct.unpack_from("<I", data, 0)
+        if not 0 < count <= MAX_CLIP_FRAMES:
+            return []
+        off = 4
+        lengths = []
+        for _ in range(count):
+            if off + 4 > len(data):
+                return []
+            (ln,) = struct.unpack_from("<I", data, off)
+            off += 4
+            lengths.append(ln)
+        frames = []
+        for ln in lengths:
+            if not 0 < ln <= 1_000_000 or off + ln > len(data):
+                break
+            chunk = data[off:off + ln]
+            off += ln
+            if chunk[:3] == b"\xff\xd8\xff":   # only keep real JPEGs — we serve these to browsers
+                frames.append(chunk)
+        return frames
+    except Exception:
+        return []
 
 # Naive in-process rate limit: {key_hash: [timestamps]}. Fine for a single-instance MVP;
 # revisit if Wasmer ever runs multiple replicas.
@@ -128,6 +161,7 @@ def report():
     logs = request.files.get("logs")
     shot = request.files.get("screenshot")
     thumb = request.files.get("thumbnail")
+    clip = request.files.get("clip")
 
     issue_id = db.new_id()
     issue_dir = os.path.join(UPLOAD_ROOT, project["id"], issue_id)
@@ -152,6 +186,16 @@ def report():
         if len(data) <= MAX_THUMB_BYTES and data[:3] == b"\xff\xd8\xff":
             with open(os.path.join(issue_dir, "thumb.jpg"), "wb") as f:
                 f.write(data)
+    if clip is not None:
+        data = clip.read(MAX_CLIP_BYTES + 1)
+        if len(data) <= MAX_CLIP_BYTES:
+            frames = _unpack_clip(data)
+            if frames:
+                clip_dir = os.path.join(issue_dir, "clip")
+                os.makedirs(clip_dir, exist_ok=True)
+                for i, frame in enumerate(frames):
+                    with open(os.path.join(clip_dir, f"{i:03d}.jpg"), "wb") as f:
+                        f.write(frame)
 
     ts = db.now()
     metadata = body.get("metadata")

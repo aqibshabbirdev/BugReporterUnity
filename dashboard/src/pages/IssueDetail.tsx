@@ -76,6 +76,35 @@ function RichLine({ text, needle }: { text: string; needle: string }) {
   )
 }
 
+function ClipPlayer({ iid }: { iid: string }) {
+  const [frames, setFrames] = useState(-1)   // -1 loading, 0 none
+  const [i, setI] = useState(0)
+  const [playing, setPlaying] = useState(true)
+
+  useEffect(() => { api.clipMeta(iid).then(m => setFrames(m.frames)).catch(() => setFrames(0)) }, [iid])
+  // Warm the browser cache so the first playthrough isn't choppy.
+  useEffect(() => { for (let n = 0; n < frames; n++) new Image().src = api.clipFrameUrl(iid, n) }, [iid, frames])
+  useEffect(() => {
+    if (frames <= 0 || !playing) return
+    const t = setInterval(() => setI(x => (x + 1) % frames), 140) // ~7fps
+    return () => clearInterval(t)
+  }, [frames, playing])
+
+  if (frames <= 0) return null
+  return (
+    <div className="card pad" style={{ marginBottom: 14 }}>
+      <label>🎞 Clip — {frames} frames leading up to the report</label>
+      <img className="clip-frame" src={api.clipFrameUrl(iid, i)} alt="" />
+      <div className="row" style={{ marginTop: 8 }}>
+        <button onClick={() => setPlaying(p => !p)}>{playing ? '⏸ Pause' : '▶ Play'}</button>
+        <input type="range" min={0} max={frames - 1} value={i}
+               onChange={e => { setPlaying(false); setI(Number(e.target.value)) }} style={{ flex: 1 }} />
+        <span className="muted small mono">{i + 1}/{frames}</span>
+      </div>
+    </div>
+  )
+}
+
 function LogViewer({ iid }: { iid: string }) {
   const [text, setText] = useState<string | null>(null)
   const [q, setQ] = useState('')
@@ -194,6 +223,8 @@ export default function IssueDetail() {
       )}
 
       {issue.description && <div className="card pad" style={{ marginBottom: 14 }}>{issue.description}</div>}
+
+      <ClipPlayer iid={iid} />
 
       {Object.keys(issue.metadata).length > 0 && (
         <div className="card pad" style={{ marginBottom: 14 }}>

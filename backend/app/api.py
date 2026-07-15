@@ -291,6 +291,37 @@ def logs(iid):
     return _attachment(iid, "logs.txt")
 
 
+def _clip_dir(iid: str):
+    with db.connect() as conn:
+        row = conn.execute("SELECT project_id FROM issues WHERE id = ?", (iid,)).fetchone()
+    if row is None:
+        return None
+    return os.path.join(UPLOAD_ROOT, row["project_id"], iid, "clip")
+
+
+@bp.get("/api/issues/<iid>/clip")
+@require_user
+def clip_meta(iid):
+    d = _clip_dir(iid)
+    if d is None:
+        return jsonify(error="not found"), 404
+    frames = len([n for n in os.listdir(d)]) if os.path.isdir(d) else 0
+    return jsonify(frames=frames)
+
+
+@bp.get("/api/issues/<iid>/clip/<int:n>.jpg")
+@require_user
+def clip_frame(iid, n):
+    d = _clip_dir(iid)
+    if d is None:
+        return jsonify(error="not found"), 404
+    # n comes from an <int:> route rule, so it's already an integer — no path-traversal surface.
+    path = os.path.join(d, f"{n:03d}.jpg")
+    if not os.path.exists(path):
+        return jsonify(error="no such frame"), 404
+    return send_file(path)
+
+
 # ── builds ──────────────────────────────────────────────────────────────────
 
 @bp.get("/api/projects/<pid>/builds")

@@ -49,5 +49,28 @@ namespace BugReporter
 
         /// <summary>Reports that fail to send are written to disk and retried on the next launch.</summary>
         public bool QueueFailedReports = true;
+
+        // ── Clip recording (the last few seconds of gameplay as a low-fps "flipbook") ────────────────────
+        // OFF by default: it captures the screen continuously, which is a real (if small) perf/battery cost —
+        // keep it to tester builds. Requires async GPU readback (most modern devices); silently no-ops without.
+
+        /// <summary>Record a rolling clip of the last <see cref="ClipSeconds"/> and attach it to reports.</summary>
+        public bool RecordClip = false;
+
+        /// <summary>How many seconds of gameplay the rolling clip keeps.</summary>
+        public int ClipSeconds = 20;
+
+        /// <summary>Frames captured per second (1–15). Lower = cheaper + smaller. 6 is a good default.</summary>
+        public int ClipFps = 6;
+
+        /// <summary>Longest side of a clip frame in pixels — frames are downscaled to keep the upload small.</summary>
+        public int ClipMaxWidth = 360;
+
+        /// <summary>JPEG quality for clip frames (1–100). These are previews, so ~45 is plenty.</summary>
+        public int ClipQuality = 45;
+
+        /// <summary>Flip clip frames vertically. Screen capture orientation is graphics-API dependent; if the
+        /// clip comes out upside-down on a device, flip this.</summary>
+        public bool ClipFlipY = false;
     }
 }
