@@ -33,7 +33,8 @@ export interface Game {
 }
 export interface IssueRow {
   id: string; title: string; severity: string; status: string
-  fixed_in_build: string | null; build_version: string; game: string; platform: string | null; created_at: number
+  fixed_in_build: string | null; build_version: string; game: string; platform: string | null
+  has_screenshot: number; created_at: number
 }
 export interface IssueDetail extends IssueRow {
   description: string; device_model: string; os_version: string

@@ -157,7 +157,7 @@ def rotate_key(pid):
 @bp.get("/api/projects/<pid>/issues")
 @require_user
 def list_issues(pid):
-    q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, platform, created_at FROM issues WHERE project_id = ?"
+    q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, platform, has_screenshot, created_at FROM issues WHERE project_id = ?"
     params: list = [pid]
     if request.args.get("build"):
         q += " AND build_version = ?"; params.append(request.args["build"])
