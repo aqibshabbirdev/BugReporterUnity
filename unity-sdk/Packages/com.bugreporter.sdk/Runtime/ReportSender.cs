@@ -35,12 +35,19 @@ namespace BugReporter
             // frame (or throw on some platforms).
             yield return new WaitForEndOfFrame();
 
-            byte[] screenshot = null;
+            byte[] screenshot = null, thumbnail = null;
             try
             {
                 var tex = ScreenCapture.CaptureScreenshotAsTexture();
-                screenshot = tex.EncodeToJPG(Mathf.Clamp(BugReporter.Config.ScreenshotQuality, 1, 100));
-                Destroy(tex);
+                try
+                {
+                    screenshot = tex.EncodeToJPG(Mathf.Clamp(BugReporter.Config.ScreenshotQuality, 1, 100));
+                    // A small thumbnail travels with the report so the dashboard grid can show previews without
+                    // downloading every full screenshot (which was making the grid crawl). Full shot stays for detail.
+                    try { thumbnail = MakeThumbnailJpg(tex, 400, 55); }
+                    catch (Exception te) { Debug.LogWarning($"[BugReporter] Thumbnail failed ({te.Message}) — sending full shot only."); }
+                }
+                finally { Destroy(tex); }
             }
             catch (Exception e)
             {
@@ -48,10 +55,38 @@ namespace BugReporter
                 Debug.LogWarning($"[BugReporter] Screenshot capture failed ({e.Message}) — sending report without it.");
             }
 
-            yield return Send(payload.ToJson(), payload.logs, screenshot, allowQueue: true);
+            yield return Send(payload.ToJson(), payload.logs, screenshot, thumbnail, allowQueue: true);
         }
 
-        private IEnumerator Send(string json, string logs, byte[] screenshot, bool allowQueue)
+        /// <summary>Downscale a screenshot to a small JPEG (longest side ≤ maxDim) via a GPU blit — cheap, and the
+        /// grid loads these instead of full frames.</summary>
+        private static byte[] MakeThumbnailJpg(Texture2D src, int maxDim, int quality)
+        {
+            float scale = Mathf.Min(1f, (float)maxDim / Mathf.Max(src.width, src.height));
+            int tw = Mathf.Max(1, Mathf.RoundToInt(src.width * scale));
+            int th = Mathf.Max(1, Mathf.RoundToInt(src.height * scale));
+
+            var rt = RenderTexture.GetTemporary(tw, th, 0, RenderTextureFormat.ARGB32);
+            var prev = RenderTexture.active;
+            Texture2D small = null;
+            try
+            {
+                Graphics.Blit(src, rt);
+                RenderTexture.active = rt;
+                small = new Texture2D(tw, th, TextureFormat.RGB24, false);
+                small.ReadPixels(new Rect(0, 0, tw, th), 0, 0);
+                small.Apply();
+                return small.EncodeToJPG(quality);
+            }
+            finally
+            {
+                RenderTexture.active = prev;
+                RenderTexture.ReleaseTemporary(rt);
+                if (small != null) Destroy(small);
+            }
+        }
+
+        private IEnumerator Send(string json, string logs, byte[] screenshot, byte[] thumbnail, bool allowQueue)
         {
             for (int attempt = 1; attempt <= MaxRetries; attempt++)
             {
@@ -63,6 +98,8 @@ namespace BugReporter
                     form.Add(new MultipartFormFileSection("logs", Encoding.UTF8.GetBytes(logs), "logs.txt", "text/plain"));
                 if (screenshot != null && screenshot.Length > 0)
                     form.Add(new MultipartFormFileSection("screenshot", screenshot, "screenshot.jpg", "image/jpeg"));
+                if (thumbnail != null && thumbnail.Length > 0)
+                    form.Add(new MultipartFormFileSection("thumbnail", thumbnail, "thumb.jpg", "image/jpeg"));
 
                 using (var req = UnityWebRequest.Post(BugReporter.Config.Endpoint, form))
                 {
@@ -93,14 +130,14 @@ namespace BugReporter
             }
 
             if (allowQueue && BugReporter.Config.QueueFailedReports)
-                QueueToDisk(json, logs, screenshot);
+                QueueToDisk(json, logs, screenshot, thumbnail);
         }
 
         // ── Offline queue ────────────────────────────────────────────────────────────────────────────
         // One folder per report so a partial write can be detected (report.json is written last, and is what
         // FlushQueue keys off).
 
-        private void QueueToDisk(string json, string logs, byte[] screenshot)
+        private void QueueToDisk(string json, string logs, byte[] screenshot, byte[] thumbnail)
         {
             try
             {
@@ -108,6 +145,7 @@ namespace BugReporter
                 Directory.CreateDirectory(dir);
                 if (!string.IsNullOrEmpty(logs)) File.WriteAllText(Path.Combine(dir, "logs.txt"), logs);
                 if (screenshot != null) File.WriteAllBytes(Path.Combine(dir, "screenshot.jpg"), screenshot);
+                if (thumbnail != null) File.WriteAllBytes(Path.Combine(dir, "thumb.jpg"), thumbnail);
                 File.WriteAllText(Path.Combine(dir, "report.json"), json);   // last — the completion marker
                 Debug.Log("[BugReporter] Offline — report queued, will retry on next launch.");
             }
@@ -129,11 +167,13 @@ namespace BugReporter
                 string json = File.ReadAllText(jsonPath);
                 string logsPath = Path.Combine(dir, "logs.txt");
                 string shotPath = Path.Combine(dir, "screenshot.jpg");
+                string thumbPath = Path.Combine(dir, "thumb.jpg");
                 string logs = File.Exists(logsPath) ? File.ReadAllText(logsPath) : null;
                 byte[] shot = File.Exists(shotPath) ? File.ReadAllBytes(shotPath) : null;
+                byte[] thumb = File.Exists(thumbPath) ? File.ReadAllBytes(thumbPath) : null;
 
                 // allowQueue:false — a queued report that fails again must not re-queue itself forever.
-                yield return Send(json, logs, shot, allowQueue: false);
+                yield return Send(json, logs, shot, thumb, allowQueue: false);
                 TryDelete(dir);
             }
         }

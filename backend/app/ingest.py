@@ -26,6 +26,7 @@ bp = Blueprint("ingest", __name__)
 UPLOAD_ROOT = os.environ.get("BR_UPLOAD_DIR", "/data/uploads")
 MAX_LOG_BYTES = 512 * 1024          # 200 lines should be ~30KB; half a MB is generous
 MAX_SHOT_BYTES = 2 * 1024 * 1024    # jpeg q60 of a 1440p frame stays well under this
+MAX_THUMB_BYTES = 256 * 1024        # ~400px q55 preview the grid loads instead of the full frame
 
 # Naive in-process rate limit: {key_hash: [timestamps]}. Fine for a single-instance MVP;
 # revisit if Wasmer ever runs multiple replicas.
@@ -125,6 +126,7 @@ def report():
 
     logs = request.files.get("logs")
     shot = request.files.get("screenshot")
+    thumb = request.files.get("thumbnail")
 
     issue_id = db.new_id()
     issue_dir = os.path.join(UPLOAD_ROOT, project["id"], issue_id)
@@ -144,6 +146,11 @@ def report():
             with open(os.path.join(issue_dir, "screenshot.jpg"), "wb") as f:
                 f.write(data)
             has_shot = 1
+    if thumb is not None:
+        data = thumb.read(MAX_THUMB_BYTES + 1)
+        if len(data) <= MAX_THUMB_BYTES and data[:3] == b"\xff\xd8\xff":
+            with open(os.path.join(issue_dir, "thumb.jpg"), "wb") as f:
+                f.write(data)
 
     ts = db.now()
     metadata = body.get("metadata")

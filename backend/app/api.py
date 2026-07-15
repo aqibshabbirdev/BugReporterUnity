@@ -238,6 +238,23 @@ def screenshot(iid):
     return _attachment(iid, "screenshot.jpg")
 
 
+@bp.get("/api/issues/<iid>/thumb.jpg")
+@require_user
+def thumb(iid):
+    # Small grid preview. Reports from the updated SDK ship a thumb.jpg; older ones fall back to the full
+    # screenshot so nothing 404s (they're just heavier until re-reported).
+    with db.connect() as conn:
+        row = conn.execute("SELECT project_id FROM issues WHERE id = ?", (iid,)).fetchone()
+    if row is None:
+        return jsonify(error="not found"), 404
+    base = os.path.join(UPLOAD_ROOT, row["project_id"], iid)
+    for name in ("thumb.jpg", "screenshot.jpg"):
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            return send_file(path)
+    return jsonify(error="no such attachment"), 404
+
+
 @bp.get("/api/issues/<iid>/logs.txt")
 @require_user
 def logs(iid):

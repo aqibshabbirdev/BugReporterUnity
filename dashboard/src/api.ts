@@ -79,6 +79,7 @@ export const api = {
 
   logsUrl: (iid: string) => `/api/issues/${iid}/logs.txt`,
   screenshotUrl: (iid: string) => `/api/issues/${iid}/screenshot.jpg`,
+  thumbUrl: (iid: string) => `/api/issues/${iid}/thumb.jpg`,
 }
 
 export const fmtTime = (unix: number) => {
