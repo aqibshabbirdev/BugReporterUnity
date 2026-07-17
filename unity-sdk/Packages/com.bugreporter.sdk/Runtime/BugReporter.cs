@@ -145,6 +145,7 @@ namespace BugReporter
                 scene        = scenePath,
                 logs         = _logs != null ? _logs.Dump() : string.Empty,
                 clip         = _clip != null ? _clip.PackLatest() : null,
+                clipFps      = _clip != null ? _clip.Fps : 0,
                 metadata     = meta,
                 device       = DeviceInfo.Capture(),
             });

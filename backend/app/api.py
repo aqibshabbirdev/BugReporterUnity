@@ -305,8 +305,17 @@ def clip_meta(iid):
     d = _clip_dir(iid)
     if d is None:
         return jsonify(error="not found"), 404
-    frames = len([n for n in os.listdir(d)]) if os.path.isdir(d) else 0
-    return jsonify(frames=frames)
+    if not os.path.isdir(d):
+        return jsonify(frames=0, fps=0)
+    # Count frames only — the dir also holds the `fps` marker file.
+    frames = len([n for n in os.listdir(d) if n.endswith(".jpg")])
+    fps = 6
+    try:
+        with open(os.path.join(d, "fps")) as f:
+            fps = int(f.read().strip())
+    except (OSError, ValueError):
+        pass                                  # older clips predate the marker — 6 was the default then
+    return jsonify(frames=frames, fps=max(1, min(fps, 60)))
 
 
 @bp.get("/api/issues/<iid>/clip/<int:n>.jpg")

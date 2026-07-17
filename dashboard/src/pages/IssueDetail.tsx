@@ -78,29 +78,51 @@ function RichLine({ text, needle }: { text: string; needle: string }) {
 
 function ClipPlayer({ iid }: { iid: string }) {
   const [frames, setFrames] = useState(-1)   // -1 loading, 0 none
+  const [fps, setFps] = useState(6)
   const [i, setI] = useState(0)
   const [playing, setPlaying] = useState(true)
+  const [speed, setSpeed] = useState(1)
+  const [zoom, setZoom] = useState(false)
 
-  useEffect(() => { api.clipMeta(iid).then(m => setFrames(m.frames)).catch(() => setFrames(0)) }, [iid])
+  useEffect(() => {
+    api.clipMeta(iid).then(m => { setFrames(m.frames); setFps(m.fps || 6) }).catch(() => setFrames(0))
+  }, [iid])
   // Warm the browser cache so the first playthrough isn't choppy.
   useEffect(() => { for (let n = 0; n < frames; n++) new Image().src = api.clipFrameUrl(iid, n) }, [iid, frames])
   useEffect(() => {
     if (frames <= 0 || !playing) return
-    const t = setInterval(() => setI(x => (x + 1) % frames), 140) // ~7fps
+    // Play at the rate it was captured at (scaled) — a fixed guess makes clips run fast or in slow motion.
+    const t = setInterval(() => setI(x => (x + 1) % frames), 1000 / (fps * speed))
     return () => clearInterval(t)
-  }, [frames, playing])
+  }, [frames, fps, playing, speed])
+
+  const step = (d: number) => { setPlaying(false); setI(x => (x + d + frames) % frames) }
 
   if (frames <= 0) return null
   return (
     <div className="card pad" style={{ marginBottom: 14 }}>
-      <label>🎞 Clip — {frames} frames leading up to the report</label>
-      <img className="clip-frame" src={api.clipFrameUrl(iid, i)} alt="" />
-      <div className="row" style={{ marginTop: 8 }}>
+      <label>🎞 Clip — last {(frames / fps).toFixed(1)}s before the report · {frames} frames @ {fps}fps</label>
+      <img className="clip-frame" src={api.clipFrameUrl(iid, i)} onClick={() => setZoom(true)} alt="" />
+      {zoom && (
+        <div className="shot-full" onClick={() => setZoom(false)}>
+          <img src={api.clipFrameUrl(iid, i)} />
+        </div>
+      )}
+      <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
         <button onClick={() => setPlaying(p => !p)}>{playing ? '⏸ Pause' : '▶ Play'}</button>
+        <button onClick={() => step(-1)} title="Previous frame">◀</button>
+        <button onClick={() => step(1)} title="Next frame">▶</button>
         <input type="range" min={0} max={frames - 1} value={i}
-               onChange={e => { setPlaying(false); setI(Number(e.target.value)) }} style={{ flex: 1 }} />
+               onChange={e => { setPlaying(false); setI(Number(e.target.value)) }} style={{ flex: 1, minWidth: 140 }} />
         <span className="muted small mono">{i + 1}/{frames}</span>
+        <select value={speed} onChange={e => setSpeed(Number(e.target.value))} title="Playback speed">
+          <option value={0.25}>0.25×</option>
+          <option value={0.5}>0.5×</option>
+          <option value={1}>1×</option>
+          <option value={2}>2×</option>
+        </select>
       </div>
+      <div className="muted small" style={{ marginTop: 6 }}>Click the frame to enlarge · ◀ ▶ step frame-by-frame</div>
     </div>
   )
 }

@@ -57,17 +57,17 @@ namespace BugReporter
         /// <summary>Record a rolling clip of the last <see cref="ClipSeconds"/> and attach it to reports.</summary>
         public bool RecordClip = false;
 
-        /// <summary>How many seconds of gameplay the rolling clip keeps.</summary>
-        public int ClipSeconds = 20;
+        /// <summary>How many seconds of gameplay the rolling clip keeps. Shorter + smoother beats long + choppy.</summary>
+        public int ClipSeconds = 12;
 
-        /// <summary>Frames captured per second (1–15). Lower = cheaper + smaller. 6 is a good default.</summary>
-        public int ClipFps = 6;
+        /// <summary>Frames captured per second (1–15). Below ~10 the clip is too choppy to read; 12 is watchable.</summary>
+        public int ClipFps = 12;
 
-        /// <summary>Longest side of a clip frame in pixels — frames are downscaled to keep the upload small.</summary>
-        public int ClipMaxWidth = 360;
+        /// <summary>Clip frame width in pixels (height follows the aspect). Under ~400 the UI/ball is unreadable.</summary>
+        public int ClipMaxWidth = 480;
 
-        /// <summary>JPEG quality for clip frames (1–100). These are previews, so ~45 is plenty.</summary>
-        public int ClipQuality = 45;
+        /// <summary>JPEG quality for clip frames (1–100).</summary>
+        public int ClipQuality = 55;
 
         /// <summary>Flip clip frames vertically. Screen capture orientation is graphics-API dependent; if the
         /// clip comes out upside-down on a device, flip this.</summary>

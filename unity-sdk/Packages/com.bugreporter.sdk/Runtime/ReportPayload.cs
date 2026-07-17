@@ -17,6 +17,7 @@ namespace BugReporter
         public string scene;
         public string logs;
         public byte[] clip;   // packed clip frames (uploaded as a binary part, not in the JSON)
+        public int clipFps;   // capture rate, so the dashboard plays the clip at real speed
         public Dictionary<string, object> metadata;
         public DeviceInfo device;
 
@@ -37,6 +38,7 @@ namespace BugReporter
             Field(sb, "osVersion", device.osVersion); sb.Append(',');
             Field(sb, "screenResolution", device.screenResolution); sb.Append(',');
             sb.Append("\"memoryMB\":").Append(device.memoryMB).Append(',');
+            sb.Append("\"clipFps\":").Append(clipFps).Append(',');
             sb.Append("\"metadata\":").Append(MetadataJson());
             sb.Append('}');
             return sb.ToString();

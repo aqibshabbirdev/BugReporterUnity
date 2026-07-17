@@ -24,6 +24,10 @@ namespace BugReporter
         private float _interval, _lastCapture;
         private bool _flipY;
 
+        /// <summary>The fps actually used (after clamping) — travels with the report so the dashboard plays
+        /// the clip at real speed instead of guessing.</summary>
+        public int Fps { get; private set; }
+
         public static ClipRecorder Create()
         {
             var cfg = BugReporter.Config;
@@ -36,6 +40,7 @@ namespace BugReporter
             int frames = Mathf.Clamp(Mathf.Max(1, cfg.ClipSeconds) * fps, fps, 900);
             r._ring = new byte[frames][];
             r._interval = 1f / fps;
+            r.Fps = fps;
             r._quality = Mathf.Clamp(cfg.ClipQuality, 1, 100);
             r._maxW = Mathf.Clamp(cfg.ClipMaxWidth, 120, 1280);
             r._flipY = cfg.ClipFlipY;

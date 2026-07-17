@@ -107,16 +107,20 @@ captures the screen continuously — a small but real perf/battery cost, so keep
 BugReporter.Init(new BugReporterConfig {
     /* … */
     RecordClip = ConstantsData_M.MpVerboseLogs,   // tester-only
-    ClipSeconds = 20, ClipFps = 6, ClipMaxWidth = 360, ClipQuality = 45,
+    ClipSeconds = 12, ClipFps = 12, ClipMaxWidth = 480, ClipQuality = 55,   // defaults
 });
 ```
 How it works: `ClipRecorder` keeps a rolling ring of the last `ClipSeconds × ClipFps` frames — each a
 downscaled JPEG captured via `ScreenCapture.CaptureScreenshotIntoRenderTexture` + **async GPU readback**
 (so it doesn't stall the render thread; needs `SystemInfo.supportsAsyncGPUReadback`, else it no-ops). On a
 report the frames are packed into one blob (`[u32 count][u32 len]×count][bytes…]`), uploaded as the `clip`
-part, split back into `clip/000.jpg…` on ingest, and the dashboard plays them as a flipbook on the issue page.
-Last ~20s at 6fps ≈ 1–3 MB. **Not device-validated yet** — if the clip is upside-down on a device, set
-`ClipFlipY = true`.
+part, split back into `clip/000.jpg…` on ingest, and the dashboard plays them as a flipbook on the issue page
+(play/pause, frame-by-frame ◀ ▶, speed, click to enlarge). Last ~12s at 12fps ≈ 3–6 MB.
+
+`ClipFps` also travels with the report (JSON `clipFps` → a `clip/fps` marker file → `GET …/clip`), because a
+player guessing a fixed rate runs the clip in slow motion or fast-forward. Clips from before that marker
+existed fall back to 6fps. Tuning: **below ~10fps it's too choppy and under ~400px too blurry to read** —
+that's what the defaults are set around. If the clip is upside-down on a device, set `ClipFlipY = true`.
 
 ### 3.1 Log noise — warnings are excluded by default
 `Debug.LogWarning` lines are **not** captured in the report's log buffer — a single frame can emit dozens

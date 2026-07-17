@@ -196,6 +196,13 @@ def report():
                 for i, frame in enumerate(frames):
                     with open(os.path.join(clip_dir, f"{i:03d}.jpg"), "wb") as f:
                         f.write(frame)
+                # Capture rate lives next to the frames (no DB column needed) so the player runs at real speed.
+                try:
+                    fps = int(body.get("clipFps") or 0)
+                except (TypeError, ValueError):
+                    fps = 0
+                with open(os.path.join(clip_dir, "fps"), "w") as f:
+                    f.write(str(fps if 0 < fps <= 60 else 6))
 
     ts = db.now()
     metadata = body.get("metadata")
