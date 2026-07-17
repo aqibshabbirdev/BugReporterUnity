@@ -69,6 +69,14 @@ namespace BugReporter
         /// <summary>JPEG quality for clip frames (1–100).</summary>
         public int ClipQuality = 55;
 
+        /// <summary>
+        /// Hard cap on the uploaded clip. A clip bigger than the server's request limit gets the whole report
+        /// rejected (413) — logs and screenshot included — so the clip is trimmed to fit instead: the OLDEST
+        /// seconds are dropped and the moments just before the report are kept. Raising ClipSeconds past what
+        /// fits here buys nothing but RAM.
+        /// </summary>
+        public int ClipMaxBytes = 8 * 1024 * 1024;
+
         /// <summary>Flip clip frames vertically. Screen capture orientation is graphics-API dependent; if the
         /// clip comes out upside-down on a device, flip this.</summary>
         public bool ClipFlipY = false;

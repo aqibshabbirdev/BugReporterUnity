@@ -49,6 +49,12 @@ namespace BugReporter
             {
                 r.StartCoroutine(r.CaptureLoop());
                 Debug.Log($"[BugReporter] Clip recording on — last {cfg.ClipSeconds}s at {fps}fps ({frames} frames).");
+                if (frames > 300)
+                {
+                    Debug.LogWarning($"[BugReporter] {frames} frames is a big ring — only the newest " +
+                        $"~{Mathf.Max(256 * 1024, cfg.ClipMaxBytes) / 1048576}MB is ever uploaded (the rest just holds RAM, " +
+                        $"roughly {frames * 35 / 1024}MB of it). A shorter ClipSeconds gets you the same clip for less.");
+                }
             }
             else
             {
@@ -124,7 +130,7 @@ namespace BugReporter
         /// </summary>
         public byte[] PackLatest()
         {
-            var frames = new List<byte[]>();
+            var all = new List<byte[]>();
             lock (_lock)
             {
                 int count = _wrapped ? _ring.Length : _next;
@@ -132,12 +138,34 @@ namespace BugReporter
                 for (int i = 0; i < count; i++)
                 {
                     byte[] f = _ring[(start + i) % _ring.Length];
-                    if (f != null) frames.Add(f);
+                    if (f != null) all.Add(f);
                 }
             }
-            if (frames.Count == 0) return null;
+            if (all.Count == 0) return null;
 
-            using var ms = new MemoryStream();
+            // Budget from the newest frame backwards. An oversized clip gets the whole report rejected by the
+            // server (413) — screenshot and logs with it — so trim here instead, dropping the OLDEST seconds:
+            // what happened right before the tester hit Report is the part worth keeping.
+            int budget = Mathf.Max(256 * 1024, BugReporter.Config.ClipMaxBytes);
+            int total = 4, first = all.Count;
+            for (int i = all.Count - 1; i >= 0; i--)
+            {
+                int cost = all[i].Length + 4;          // frame bytes + its length prefix
+                if (total + cost > budget) break;
+                total += cost;
+                first = i;
+            }
+            if (first >= all.Count) return null;       // even one frame doesn't fit — send no clip at all
+
+            var frames = all.GetRange(first, all.Count - first);
+            if (frames.Count < all.Count)
+            {
+                Debug.LogWarning($"[BugReporter] Clip trimmed {all.Count}→{frames.Count} frames " +
+                    $"(~{frames.Count / Mathf.Max(1, Fps)}s, {total / 1048576f:F1}MB) to fit ClipMaxBytes. " +
+                    "Lower ClipSeconds/ClipMaxWidth if you want the full window.");
+            }
+
+            using var ms = new MemoryStream(total);
             using var bw = new BinaryWriter(ms);   // BinaryWriter is little-endian on every platform
             bw.Write((uint)frames.Count);
             foreach (var f in frames) bw.Write((uint)f.Length);

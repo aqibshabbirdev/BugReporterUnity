@@ -103,10 +103,13 @@ namespace BugReporter
                 if (clip != null && clip.Length > 0)
                     form.Add(new MultipartFormFileSection("clip", clip, "clip.bin", "application/octet-stream"));
 
+                Debug.Log($"[BugReporter] Sending report — screenshot {(screenshot?.Length ?? 0) / 1024}KB, " +
+                          $"clip {(clip?.Length ?? 0) / 1024}KB, logs {(logs?.Length ?? 0) / 1024}KB (attempt {attempt}/{MaxRetries}).");
+
                 using (var req = UnityWebRequest.Post(BugReporter.Config.Endpoint, form))
                 {
                     req.SetRequestHeader("X-Api-Key", BugReporter.Config.ApiKey);
-                    req.timeout = 30;
+                    req.timeout = clip != null ? 120 : 30;   // a multi-MB clip won't clear 30s on mobile data
                     yield return req.SendWebRequest();
 
                     if (req.result == UnityWebRequest.Result.Success)
@@ -115,8 +118,18 @@ namespace BugReporter
                         yield break;
                     }
 
-                    // A 4xx means the server rejected the report itself (bad key, malformed body). Retrying or
-                    // queueing it would just repeat the rejection — drop it and say why.
+                    // 413 = the body blew the server's request cap, which in practice means the clip. The clip
+                    // is the least valuable part — drop it and resend so the logs and screenshot still land,
+                    // instead of losing the whole report.
+                    if (req.responseCode == 413 && clip != null)
+                    {
+                        Debug.LogWarning($"[BugReporter] Report too large ({clip.Length / 1048576f:F1}MB clip) — resending without the clip.");
+                        clip = null;
+                        continue;
+                    }
+
+                    // Any other 4xx means the server rejected the report itself (bad key, malformed body).
+                    // Retrying or queueing it would just repeat the rejection — drop it and say why.
                     bool clientError = req.responseCode >= 400 && req.responseCode < 500;
                     if (clientError)
                     {
