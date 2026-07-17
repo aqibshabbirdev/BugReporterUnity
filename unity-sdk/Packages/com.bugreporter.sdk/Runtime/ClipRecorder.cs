@@ -43,12 +43,16 @@ namespace BugReporter
             r.Fps = fps;
             r._quality = Mathf.Clamp(cfg.ClipQuality, 1, 100);
             r._maxW = Mathf.Clamp(cfg.ClipMaxWidth, 120, 1280);
-            r._flipY = cfg.ClipFlipY;
+            // CaptureScreenshotIntoRenderTexture writes in the framebuffer's native orientation: top-origin
+            // APIs (Metal/D3D/Vulkan) land upside-down, OpenGL lands upright. graphicsUVStartsAtTop tells the
+            // two apart, so the clip is the right way up without a per-platform toggle.
+            r._flipY = cfg.ClipFlipY ?? SystemInfo.graphicsUVStartsAtTop;
 
             if (SystemInfo.supportsAsyncGPUReadback)
             {
                 r.StartCoroutine(r.CaptureLoop());
-                Debug.Log($"[BugReporter] Clip recording on — last {cfg.ClipSeconds}s at {fps}fps ({frames} frames).");
+                Debug.Log($"[BugReporter] Clip recording on — last {cfg.ClipSeconds}s at {fps}fps ({frames} frames), " +
+                          $"flipY={r._flipY} ({(cfg.ClipFlipY.HasValue ? "forced" : $"auto, {SystemInfo.graphicsDeviceType}")}).");
                 if (frames > 300)
                 {
                     Debug.LogWarning($"[BugReporter] {frames} frames is a big ring — only the newest " +

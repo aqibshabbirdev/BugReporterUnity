@@ -77,8 +77,11 @@ namespace BugReporter
         /// </summary>
         public int ClipMaxBytes = 8 * 1024 * 1024;
 
-        /// <summary>Flip clip frames vertically. Screen capture orientation is graphics-API dependent; if the
-        /// clip comes out upside-down on a device, flip this.</summary>
-        public bool ClipFlipY = false;
+        /// <summary>
+        /// Flip clip frames vertically. Screen capture into a RenderTexture keeps the framebuffer's native
+        /// orientation, which is upside-down on top-origin APIs (Metal, D3D, Vulkan) and upright on OpenGL —
+        /// so this is <b>auto-detected per device</b> by default. Set true/false only to override a wrong guess.
+        /// </summary>
+        public bool? ClipFlipY = null;
     }
 }
