@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, Build, fmtTime, Project } from '../api'
+import { api, Build, fmtTime, Project, StorageInfo } from '../api'
+
+const mb = (b: number) => b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(2)} GB` : `${(b / 1024 ** 2).toFixed(1)} MB`
 
 export default function Settings() {
   const { pid = '' } = useParams()
@@ -8,11 +10,26 @@ export default function Settings() {
   const [builds, setBuilds] = useState<Build[]>([])
   const [rotated, setRotated] = useState('')
   const [confirmRotate, setConfirmRotate] = useState(false)
+  const [storage, setStorage] = useState<StorageInfo | null>(null)
+  const [cleaning, setCleaning] = useState(false)
+  const [cleaned, setCleaned] = useState('')
 
   useEffect(() => {
     api.projects().then(ps => setProject(ps.find(p => p.id === pid) ?? null)).catch(() => {})
     api.builds(pid).then(setBuilds).catch(() => {})
+    api.storage().then(setStorage).catch(() => {})
   }, [pid])
+
+  const cleanup = async () => {
+    setCleaning(true); setCleaned('')
+    try {
+      const r = await api.cleanup()
+      setStorage({ bytes: r.bytes, clip_days: r.clip_days, retain_days: r.retain_days })
+      setCleaned(`Purged ${r.clips_purged} clip(s) and ${r.issues_purged} issue attachment(s).`)
+    } catch (e) {
+      setCleaned(e instanceof Error ? e.message : 'cleanup failed')
+    } finally { setCleaning(false) }
+  }
 
   const endpoint = `${window.location.origin}/api/report`
   const snippet = `[RuntimeInitializeOnLoadMethod]
@@ -62,6 +79,26 @@ static void InitBugReporter()
           <button onClick={() => setConfirmRotate(true)}>Rotate API key</button>
         )}
       </div>
+
+      {storage && (
+        <div className="card pad" style={{ marginTop: 14 }}>
+          <label>Storage</label>
+          <div className="row" style={{ alignItems: 'baseline', gap: 8 }}>
+            <span style={{ fontSize: 24, fontWeight: 700 }}>{mb(storage.bytes)}</span>
+            <span className="muted small">of screenshots, clips and logs on disk</span>
+          </div>
+          <p className="small muted" style={{ marginBottom: 10 }}>
+            Issue records are kept forever — only the heavy evidence expires. Clips are dropped after{' '}
+            <b>{storage.clip_days} days</b>, screenshots and logs after <b>{storage.retain_days} days</b>.
+            Cleanup runs automatically (at most hourly) as new reports arrive. Tune with the{' '}
+            <span className="mono">BR_RETAIN_CLIP_DAYS</span> / <span className="mono">BR_RETAIN_DAYS</span> env vars.
+          </p>
+          <div className="row">
+            <button onClick={cleanup} disabled={cleaning}>{cleaning ? 'Cleaning…' : 'Clean up now'}</button>
+            {cleaned && <span className="small muted">{cleaned}</span>}
+          </div>
+        </div>
+      )}
 
       <div className="card pad" style={{ marginTop: 14 }}>
         <label>Unity integration</label>

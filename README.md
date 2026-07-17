@@ -168,6 +168,8 @@ BUILD you hand testers — in-editor presence isn't enough for the Android build
 | `BR_DB_*` variants / `DB_URL` / `DB_USER` | accepted fallbacks in `db.py` (checked in that order) |
 | `BR_INVITE_CODE` | registration is invite-only; a would-be dashboard user needs this code |
 | `BR_DELETE_CODE` | confirm password for deleting an issue (dashboard → issue → Danger zone). Defaults to `Queen@21`; set a private value here |
+| `BR_RETAIN_CLIP_DAYS` | clips are purged after this many days (default 7) — see §8 |
+| `BR_RETAIN_DAYS` | screenshots/thumbs/logs are purged after this many days (default 30) |
 
 ### WASIX gotchas (cost us real debugging time)
 1. `import pymysql` calls `getpass.getuser()` → **OSError on WASIX** unless a `USER` env var exists.
@@ -224,6 +226,14 @@ Dashboard access needs an account — registration requires the invite code (`BR
 - **Rotate the project API key** (dashboard → Settings → Rotate) — the original key appeared in a
   chat transcript during development. Owner deferred rotation during testing; do it before wider use.
 - **Rotate the MySQL credentials** (Wasmer → Databases → Rotate Credentials) — same reason.
+- **Retention** (`backend/app/retention.py`): nothing else in the system prunes bytes, and a full `/data`
+  volume makes uploads fail *silently*. Two tiers — clips (the whale, ~3-6 MB each) go after
+  `BR_RETAIN_CLIP_DAYS` (7), the rest of an issue's attachments after `BR_RETAIN_DAYS` (30). The issue
+  **row is never deleted** — only its evidence; `has_screenshot`/`has_logs`/`has_clip` are cleared as files
+  go, so the UI renders its normal "no attachment" states. There's no scheduler here, so the purge runs off
+  the ingest path (throttled to once an hour) — growth and cleanup stay coupled — plus a **Clean up now**
+  button and live usage figure in dashboard → Settings → Storage (`GET /api/storage`,
+  `POST /api/storage/cleanup`, admin).
 - The in-process rate limiter resets on redeploy and doesn't share across instances — fine for the
   current single-instance free tier; revisit if scaled.
 - `backend/.venv/` is local-only convenience; it should stay untracked.

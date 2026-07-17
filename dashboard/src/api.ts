@@ -31,6 +31,10 @@ export interface Build {
 export interface Game {
   game: string; report_count: number; open_count: number
 }
+// Named StorageInfo, not Storage — the DOM already owns that name.
+export interface StorageInfo {
+  bytes: number; clip_days: number; retain_days: number
+}
 export interface IssueRow {
   id: string; title: string; severity: string; status: string
   fixed_in_build: string | null; build_version: string; game: string; session: string; platform: string | null
@@ -81,6 +85,9 @@ export const api = {
     req<{ ok: boolean }>(`/api/issues/${iid}/comments`, { method: 'POST', body: JSON.stringify({ text }) }),
   deleteIssue: (iid: string, code: string) =>
     req<{ ok: boolean }>(`/api/issues/${iid}`, { method: 'DELETE', body: JSON.stringify({ code }) }),
+
+  storage: () => req<StorageInfo>('/api/storage'),
+  cleanup: () => req<StorageInfo & { clips_purged: number; issues_purged: number }>('/api/storage/cleanup', { method: 'POST' }),
 
   builds: (pid: string) => req<Build[]>(`/api/projects/${pid}/builds`),
   games: (pid: string) => req<Game[]>(`/api/projects/${pid}/games`),

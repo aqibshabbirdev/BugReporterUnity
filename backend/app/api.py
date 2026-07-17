@@ -139,6 +139,27 @@ def create_project():
     return jsonify(id=pid, name=name, apiKey=key), 201
 
 
+# ── storage / retention ─────────────────────────────────────────────────────
+
+@bp.get("/api/storage")
+@require_user
+def storage():
+    from . import retention
+    clip_days, full_days = retention.retain_days()
+    return jsonify(bytes=retention.usage_bytes(), clip_days=clip_days, retain_days=full_days)
+
+
+@bp.post("/api/storage/cleanup")
+@require_user
+def storage_cleanup():
+    if g.user["role"] != "admin":
+        return jsonify(error="admin only"), 403
+    from . import retention
+    out = retention.purge()
+    out["bytes"] = retention.usage_bytes()
+    return jsonify(out)
+
+
 @bp.post("/api/projects/<pid>/rotate-key")
 @require_user
 def rotate_key(pid):

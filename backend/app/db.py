@@ -138,6 +138,7 @@ _SCHEMA = [
         metadata          TEXT,
         has_screenshot    TINYINT NOT NULL DEFAULT 0,
         has_logs          TINYINT NOT NULL DEFAULT 0,
+        has_clip          TINYINT NOT NULL DEFAULT 0,
         created_at        BIGINT NOT NULL,
         updated_at        BIGINT NOT NULL,
         KEY idx_issues_project_created (project_id, created_at),
@@ -186,6 +187,14 @@ def _migrate(conn):
     if not has_session:
         conn.execute("ALTER TABLE issues ADD COLUMN session VARCHAR(80) NOT NULL DEFAULT '' AFTER game")
         conn.execute("ALTER TABLE issues ADD KEY idx_issues_project_session (project_id, session)")
+
+    # issues.has_clip — lets retention find (and mark) clips without stat-ing every issue directory.
+    has_clip = conn.execute(
+        """SELECT COUNT(*) c FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = 'issues' AND column_name = 'has_clip'"""
+    ).fetchone()["c"]
+    if not has_clip:
+        conn.execute("ALTER TABLE issues ADD COLUMN has_clip TINYINT NOT NULL DEFAULT 0 AFTER has_logs")
 
 
 def now() -> int:

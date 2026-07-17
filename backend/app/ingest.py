@@ -67,6 +67,11 @@ _recent: dict[str, list[float]] = {}
 RATE_LIMIT = 30          # reports
 RATE_WINDOW = 60.0       # per minute per key
 
+# Retention runs off the ingest path — there's no scheduler here, and this is exactly when new bytes
+# arrive, so growth and cleanup stay coupled. Throttled so it's at most an hourly cost on one report.
+_last_purge = 0.0
+PURGE_EVERY = 3600.0
+
 
 # ── scene → game ────────────────────────────────────────────────────────────
 # The SDK ships the active scene's asset path, e.g. "Assets/_Games/CRICKET/Scene/Ground.unity".
@@ -165,7 +170,7 @@ def report():
 
     issue_id = db.new_id()
     issue_dir = os.path.join(UPLOAD_ROOT, project["id"], issue_id)
-    has_logs = has_shot = 0
+    has_logs = has_shot = has_clip = 0
     os.makedirs(issue_dir, exist_ok=True)
 
     if logs is not None:
@@ -196,6 +201,7 @@ def report():
                 for i, frame in enumerate(frames):
                     with open(os.path.join(clip_dir, f"{i:03d}.jpg"), "wb") as f:
                         f.write(frame)
+                has_clip = 1
                 # Capture rate lives next to the frames (no DB column needed) so the player runs at real speed.
                 try:
                     fps = int(body.get("clipFps") or 0)
@@ -213,8 +219,8 @@ def report():
         conn.execute(
             """INSERT INTO issues (id, project_id, title, description, severity, status,
                    build_version, game, session, platform, device_model, os_version, screen_resolution,
-                   memory_mb, metadata, has_screenshot, has_logs, created_at, updated_at)
-               VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   memory_mb, metadata, has_screenshot, has_logs, has_clip, created_at, updated_at)
+               VALUES (?,?,?,?,?,'open',?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 issue_id, project["id"], title,
                 str(body.get("description") or "")[:2000],
@@ -223,7 +229,7 @@ def report():
                 str(body.get("osVersion") or "")[:80],
                 str(body.get("screenResolution") or "")[:20],
                 int(body.get("memoryMB") or 0),
-                metadata_json, has_shot, has_logs, ts, ts,
+                metadata_json, has_shot, has_logs, has_clip, ts, ts,
             ),
         )
         # Build registry: first report from an unseen version creates the row (MySQL upsert).
@@ -235,4 +241,14 @@ def report():
         )
 
     current_app.logger.info("report %s accepted (build %s)", issue_id, build_version)
+
+    global _last_purge
+    if time.time() - _last_purge > PURGE_EVERY:
+        _last_purge = time.time()          # set first: a failing purge must not retry on every report
+        try:
+            from . import retention        # imported late — retention imports this module
+            current_app.logger.info("retention: %s", retention.purge())
+        except Exception as e:             # noqa: BLE001 — never fail a report over housekeeping
+            current_app.logger.warning("retention purge failed: %s", e)
+
     return jsonify(id=issue_id), 201
