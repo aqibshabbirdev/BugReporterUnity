@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api, fmtTime, IssueDetail as Detail } from '../api'
 import { Severity, Status } from '../components/Badges'
+import { STATUS_FLOW, STATUS_HINT, STATUS_LABEL } from '../status'
 
 // ── Unity rich text ──────────────────────────────────────────────────────────
 // Game logs arrive with Unity's console markup (<color=…>, <b>, <i>, <u>, <size=…>). We render it as
@@ -182,13 +183,19 @@ export default function IssueDetail() {
   const [delErr, setDelErr] = useState('')
   const [deleting, setDeleting] = useState(false)
 
-  const load = () => { api.issue(iid).then(setIssue).catch(() => {}) }
+  // Seed the build box from the issue so an already-stamped build is visible (and survives a
+  // re-save) instead of showing blank next to a "waiting for test in 0.9.53" badge.
+  const load = () => {
+    api.issue(iid).then(d => { setIssue(d); setFixedIn(d.fixed_in_build ?? '') }).catch(() => {})
+  }
   useEffect(load, [iid])
 
   if (!issue) return <div className="page"><div className="empty">Loading…</div></div>
 
   const setStatus = async (status: string) => {
-    await api.setStatus(iid, status, status === 'fixed_in_build' ? fixedIn || undefined : undefined)
+    // The build stamp only travels with the state that means "a fix exists"; the server clears it
+    // on open/pending and keeps the stored one when we send nothing.
+    await api.setStatus(iid, status, status === 'waiting_for_test' ? fixedIn || undefined : undefined)
     load()
   }
   const addComment = async () => {
@@ -279,13 +286,20 @@ export default function IssueDetail() {
 
       <div className="card pad" style={{ marginTop: 14 }}>
         <label>Status</label>
-        <div className="row">
-          <button onClick={() => setStatus('open')}>Open</button>
+        <div className="status-picker">
+          {STATUS_FLOW.map(s => (
+            <button key={s} title={STATUS_HINT[s]}
+                    className={`status-btn st-btn-${s}${issue.status === s ? ' active' : ''}`}
+                    onClick={() => setStatus(s)}>
+              {STATUS_LABEL[s]}
+            </button>
+          ))}
+        </div>
+        <div className="muted small" style={{ marginTop: 8 }}>{STATUS_HINT[issue.status] ?? ''}</div>
+        <div className="row" style={{ marginTop: 10 }}>
           <input placeholder="fixed in build… (e.g. 0.9.53)" value={fixedIn}
                  onChange={e => setFixedIn(e.target.value)} className="mono" />
-          <button onClick={() => setStatus('fixed_in_build')}>Fixed in build</button>
-          <button onClick={() => setStatus('verified')}>Verified</button>
-          <button onClick={() => setStatus('wont_fix')}>Won't fix</button>
+          <span className="muted small">stamped on the issue when you move it to “Waiting for test”</span>
         </div>
       </div>
 

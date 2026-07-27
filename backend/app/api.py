@@ -176,6 +176,13 @@ def rotate_key(pid):
 
 # ── issues ──────────────────────────────────────────────────────────────────
 
+# The workflow the team actually runs, in order: a report lands in `open`, a dev moves it to
+# `pending` while working on it, to `waiting_for_test` once a build carries the fix, and whoever
+# retests closes it. Anything not `closed` still needs someone — that's what the "N open" counters
+# on the build/game filters mean. Legacy values are remapped on boot by db._migrate.
+STATUSES = ("open", "pending", "waiting_for_test", "closed")
+
+
 @bp.get("/api/projects/<pid>/issues")
 @require_user
 def list_issues(pid):
@@ -224,15 +231,29 @@ def issue_detail(iid):
 def update_issue(iid):
     body = request.get_json(silent=True) or {}
     status = body.get("status")
-    if status not in ("open", "fixed_in_build", "verified", "wont_fix"):
+    if status not in STATUSES:
         return jsonify(error="bad status"), 400
-    fixed_in = str(body.get("fixedInBuild") or "")[:50] if status == "fixed_in_build" else None
+    fixed_in = str(body.get("fixedInBuild") or "").strip()[:50]
+
+    # fixed_in_build has to SURVIVE the move to closed — you want to know which build the fix shipped
+    # in long after the tester signed it off. The old code rewrote the column on every PATCH, so
+    # closing an issue erased that. Only these three cases touch it.
+    if status in ("open", "pending"):
+        sql = "UPDATE issues SET status = ?, fixed_in_build = NULL, updated_at = ? WHERE id = ?"
+        params = (status, db.now(), iid)          # reopened/back in progress — no fix stands any more
+    elif fixed_in:
+        sql = "UPDATE issues SET status = ?, fixed_in_build = ?, updated_at = ? WHERE id = ?"
+        params = (status, fixed_in, db.now(), iid)
+    else:
+        sql = "UPDATE issues SET status = ?, updated_at = ? WHERE id = ?"
+        params = (status, db.now(), iid)          # keep whatever build is already stamped
+
     with db.connect() as conn:
-        changed = conn.execute(
-            "UPDATE issues SET status = ?, fixed_in_build = ?, updated_at = ? WHERE id = ?",
-            (status, fixed_in, db.now(), iid)).rowcount
-    if not changed:
-        return jsonify(error="not found"), 404
+        # Existence check rather than rowcount: PyMySQL reports rows *changed*, so re-applying the
+        # status an issue already has would otherwise 404.
+        if conn.execute("SELECT 1 FROM issues WHERE id = ?", (iid,)).fetchone() is None:
+            return jsonify(error="not found"), 404
+        conn.execute(sql, params)
     return jsonify(ok=True)
 
 
@@ -361,7 +382,7 @@ def list_builds(pid):
         rows = conn.execute(
             """SELECT version, platform, first_seen_at, report_count,
                       (SELECT COUNT(*) FROM issues i WHERE i.project_id = b.project_id
-                        AND i.build_version = b.version AND i.status = 'open') AS open_count
+                        AND i.build_version = b.version AND i.status <> 'closed') AS open_count
                FROM builds b WHERE project_id = ? ORDER BY first_seen_at DESC""", (pid,)
         ).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -378,7 +399,7 @@ def list_games(pid):
         rows = conn.execute(
             """SELECT game,
                       COUNT(*) AS report_count,
-                      COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_count
+                      COUNT(CASE WHEN status <> 'closed' THEN 1 END) AS open_count
                FROM issues
                WHERE project_id = ? AND game <> ''
                GROUP BY game ORDER BY game""", (pid,)

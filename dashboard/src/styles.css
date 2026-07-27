@@ -127,10 +127,40 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .sev-normal { background: rgba(31,111,235,.16); color: #79b8ff; border-color: rgba(31,111,235,.3); }
 .sev-high   { background: rgba(240,136,62,.15); color: var(--orange); border-color: rgba(240,136,62,.3); }
 .sev-crash  { background: rgba(248,81,73,.15); color: var(--red); border-color: rgba(248,81,73,.35); }
-.st-open           { background: rgba(210,153,34,.15); color: var(--amber); border-color: rgba(210,153,34,.3); }
-.st-fixed_in_build { background: rgba(31,111,235,.16); color: #79b8ff; border-color: rgba(31,111,235,.3); }
-.st-verified       { background: rgba(63,185,80,.15); color: var(--green); border-color: rgba(63,185,80,.3); }
-.st-wont_fix       { background: #262c36; color: var(--muted); }
+/* one colour per workflow state, reused by the badge, the filter tab and the picker button */
+.st-open             { background: rgba(210,153,34,.15); color: var(--amber); border-color: rgba(210,153,34,.3); }
+.st-pending          { background: rgba(163,113,247,.16); color: #c297ff; border-color: rgba(163,113,247,.32); }
+.st-waiting_for_test { background: rgba(31,111,235,.16); color: #79b8ff; border-color: rgba(31,111,235,.3); }
+.st-closed           { background: rgba(63,185,80,.15); color: var(--green); border-color: rgba(63,185,80,.3); }
+
+/* status filter tabs (issues list) */
+.status-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; }
+.status-tab {
+  display: inline-flex; align-items: center; gap: 8px;
+  border-radius: 999px; padding: 7px 9px 7px 15px; font-size: 13px; font-weight: 600;
+  background: var(--bg2); border: 1px solid var(--border-soft); color: var(--muted);
+}
+.status-tab:hover { background: var(--bg-hover); border-color: var(--border); color: var(--text); }
+.status-tab .n {
+  min-width: 20px; text-align: center; padding: 1px 7px; border-radius: 999px;
+  font-size: 11px; font-weight: 700; background: rgba(255,255,255,.07);
+}
+.status-tab.active { color: #fff; border-color: transparent; background: var(--accent); }
+.status-tab.active:hover { color: #fff; border-color: transparent; }
+.status-tab.active .n { background: rgba(0,0,0,.26); }
+.status-tab.st-tab-open.active             { background: #b07d15; }
+.status-tab.st-tab-pending.active          { background: #7c4dcc; }
+.status-tab.st-tab-waiting_for_test.active { background: #1f6feb; }
+.status-tab.st-tab-closed.active           { background: #2ea043; }
+
+/* status picker (issue detail) — the state it is already in reads as pressed, not as another option */
+.status-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.status-btn.active { color: #fff; border-color: transparent; font-weight: 600; }
+.status-btn.st-btn-open.active             { background: #b07d15; }
+.status-btn.st-btn-pending.active          { background: #7c4dcc; }
+.status-btn.st-btn-waiting_for_test.active { background: #1f6feb; }
+.status-btn.st-btn-closed.active           { background: #2ea043; }
+.status-btn.active:hover { border-color: rgba(255,255,255,.35); }
 
 /* game pill */
 .pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 6px;

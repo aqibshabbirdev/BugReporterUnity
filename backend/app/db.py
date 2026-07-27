@@ -125,6 +125,7 @@ _SCHEMA = [
         title             VARCHAR(200) NOT NULL,
         description       TEXT,
         severity          VARCHAR(10) NOT NULL DEFAULT 'normal',
+        -- workflow: open → pending → waiting_for_test → closed (see api.update_issue / _migrate)
         status            VARCHAR(20) NOT NULL DEFAULT 'open',
         fixed_in_build    VARCHAR(50),
         build_version     VARCHAR(50) NOT NULL,
@@ -195,6 +196,14 @@ def _migrate(conn):
     ).fetchone()["c"]
     if not has_clip:
         conn.execute("ALTER TABLE issues ADD COLUMN has_clip TINYINT NOT NULL DEFAULT 0 AFTER has_logs")
+
+    # Status workflow rename: the original set (open / fixed_in_build / verified / wont_fix) described
+    # what a DEV had done; the workflow the team actually runs is a queue — open → pending →
+    # waiting_for_test → closed. Remap the legacy values in place so old reports keep their meaning:
+    # a "fixed in build X" report is exactly one waiting for a tester, and both end states are closed.
+    # No column change, so this is a plain UPDATE — idempotent because the second run matches no rows.
+    conn.execute("UPDATE issues SET status = 'waiting_for_test' WHERE status = 'fixed_in_build'")
+    conn.execute("UPDATE issues SET status = 'closed' WHERE status IN ('verified', 'wont_fix')")
 
 
 def now() -> int:

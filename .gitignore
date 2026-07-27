@@ -14,3 +14,7 @@ dist/
 backend/.venv/
 *.sqlite
 dashboard/node_modules/
+
+# Python bytecode — never belongs in the repo (stale .pyc can shadow the source on a different runtime)
+__pycache__/
+*.pyc

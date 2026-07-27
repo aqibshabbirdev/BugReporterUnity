@@ -197,14 +197,43 @@ Dashboard (session cookie; scrypt-hashed passwords; invite-code registration):
 - `GET|POST /api/projects`, `POST /api/projects/<pid>/rotate-key`
 - `GET /api/projects/<pid>/issues` — filters: `?build=`, `?game=`, `?status=`
 - `GET /api/projects/<pid>/builds`, `GET /api/projects/<pid>/games` (games with issue/open counts, for the filter)
-- `GET|PATCH /api/issues/<iid>` — detail includes `siblings` (other reports in the same session), `POST /api/issues/<iid>/comments`
+- `GET|PATCH /api/issues/<iid>` — detail includes `siblings` (other reports in the same session).
+  PATCH body is `{status, fixedInBuild?}` — see §5.1. `POST /api/issues/<iid>/comments`
 - `GET /api/issues/<iid>/screenshot.jpg`, `GET /api/issues/<iid>/logs.txt`
 - `GET /api/health` — DB/env diagnostics
 
+### 5.1 Issue status workflow
+
+Every report moves through four states, in this order:
+
+| Status | Means | Who moves it |
+|---|---|---|
+| `open` | Reported, nobody on it yet | — (every new report lands here) |
+| `pending` | Someone is working on it | dev, when they pick it up |
+| `waiting_for_test` | Fix is in a build — needs a retest | dev, with the build number |
+| `closed` | Retested and done | tester |
+
+- **The build stamp.** `fixed_in_build` is set when you move an issue to `waiting_for_test` and
+  **survives the move to `closed`** — you still want to know which build carried the fix months later.
+  Moving back to `open`/`pending` clears it, because the fix no longer stands. (The original PATCH
+  rewrote that column on *every* status change, so closing an issue silently erased it.)
+- **"Unresolved" ≠ `open`.** The `open_count` on `/builds` and `/games`, the Unresolved tile and the
+  per-game pill all mean *not closed* — a pending or waiting-for-test issue still needs someone. Only
+  the `Open` tab means the literal `open` state.
+- **Dashboard:** a row of filter tabs above the issues list, each with a live count. Filtering happens
+  in the browser off one fetch, so the counts are true facet counts (they show what each tab *would*
+  show) and switching tabs costs no round trip.
+- **Legacy values** (`fixed_in_build` / `verified` / `wont_fix`, the original set) are remapped on boot
+  by `db._migrate` → `waiting_for_test` / `closed` / `closed`. Plain idempotent UPDATEs, no column
+  change. `wont_fix` and `verified` both collapse into `closed` — if you need "won't fix" back as a
+  distinct state, add it to `api.STATUSES` and `dashboard/src/status.ts` and it appears everywhere.
+- **Adding or renaming a state** is two edits: `STATUSES` in `backend/app/api.py` and
+  `dashboard/src/status.ts` (order, labels, hints). The tabs, badges and picker all read from there.
+
 ## 6. Dashboard
 
-React + Vite + TS in `dashboard/`. Pages: Login, Projects, Issues (list + build filter),
-IssueDetail (screenshot + log viewer + comments + status), Settings (API key + rotate).
+React + Vite + TS in `dashboard/`. Pages: Login, Projects, Issues (status tabs + date/game/build
+filters), IssueDetail (screenshot + log viewer + comments + status picker), Settings (API key + rotate).
 
 Build & ship (the built output is **committed** so Wasmer needs no node step):
 ```bash
@@ -249,7 +278,7 @@ Dashboard access needs an account — registration requires the invite code (`BR
 | No Report button on device | SDK `Enabled` flag + the boot script actually in that BUILD |
 | Registration rejected | `BR_INVITE_CODE` env set and code matches |
 
-## 10. State as of 2026-07-14
+## 10. State as of 2026-07-27
 
 - Deployed and working end-to-end: SDK → ingest → MySQL → dashboard.
 - Integrated in the GamesPanda client (dev-gated); tested from Unity editor and Android.
@@ -258,5 +287,8 @@ Dashboard access needs an account — registration requires the invite code (`BR
   and log buffers aren't drowned in warnings. The game is derived from the active scene's `_Games/<Folder>/`
   path with no per-game wiring (`SetGame` is an optional override). Backend needs a redeploy (auto `issues.game`
   migration on boot); testers need a rebuilt client (any build with the updated SDK).
+- **Issue status workflow** (open → pending → waiting_for_test → closed) added 2026-07-27, replacing
+  the original open/fixed_in_build/verified/wont_fix set — see §5.1. Backend needs a redeploy; the
+  boot migration remaps existing rows, so no manual DB work. No SDK/client change.
 - Open items: key + DB credential rotation (§8); dashboard invite for additional testers
   (set/share `BR_INVITE_CODE`); optional niceties from PLAN.md (email notify, issue dedup rules).
