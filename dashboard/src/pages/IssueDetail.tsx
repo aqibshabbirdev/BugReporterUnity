@@ -88,8 +88,21 @@ function ClipPlayer({ iid }: { iid: string }) {
   useEffect(() => {
     api.clipMeta(iid).then(m => { setFrames(m.frames); setFps(m.fps || 6) }).catch(() => setFrames(0))
   }, [iid])
-  // Warm the browser cache so the first playthrough isn't choppy.
-  useEffect(() => { for (let n = 0; n < frames; n++) new Image().src = api.clipFrameUrl(iid, n) }, [iid, frames])
+  // Warm the browser cache — but with limited concurrency. Firing all N frame requests at once (a clip is
+  // hundreds) stampeded the server's tiny DB connection pool and 500'd the whole app. Chain a few at a time.
+  useEffect(() => {
+    if (frames <= 0) return
+    let cancelled = false, next = 0
+    const CONCURRENCY = 4
+    const pump = () => {
+      if (cancelled || next >= frames) return
+      const img = new Image()
+      img.onload = img.onerror = () => { if (!cancelled) pump() }
+      img.src = api.clipFrameUrl(iid, next++)
+    }
+    for (let k = 0; k < CONCURRENCY; k++) pump()
+    return () => { cancelled = true }
+  }, [iid, frames])
   useEffect(() => {
     if (frames <= 0 || !playing) return
     // Play at the rate it was captured at (scaled) — a fixed guess makes clips run fast or in slow motion.

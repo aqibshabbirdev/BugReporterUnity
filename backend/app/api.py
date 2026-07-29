@@ -9,6 +9,8 @@ import json
 import os
 import secrets
 import shutil
+import time
+from functools import lru_cache
 
 from flask import Blueprint, g, jsonify, request, send_file
 
@@ -18,6 +20,25 @@ from .ingest import UPLOAD_ROOT
 bp = Blueprint("api", __name__)
 
 SESSION_TTL = 30 * 24 * 3600
+
+
+# ── connection-saving caches ─────────────────────────────────────────────────
+# The managed MySQL has a small connection cap, and PyMySQL opens a fresh connection per db.connect().
+# A single clip playback fetches hundreds of frames back-to-back; without these caches each frame cost
+# two connections (auth + path lookup) and a burst exhausted the pool — every request, login included,
+# then 500'd with "Too many connections". These keep asset serving off the DB almost entirely.
+
+@lru_cache(maxsize=8192)
+def _project_of(iid: str):
+    """issue id -> project id. Immutable, so cache forever. A deleted issue just resolves to a missing
+    path and 404s, which is the same result as a cache miss."""
+    with db.connect() as conn:
+        row = conn.execute("SELECT project_id FROM issues WHERE id = ?", (iid,)).fetchone()
+    return row["project_id"] if row else None
+
+
+_session_cache: dict[str, tuple[float, dict]] = {}
+SESSION_CACHE_TTL = 30      # seconds — a burst of asset requests shares one auth lookup
 
 
 # ── auth plumbing ───────────────────────────────────────────────────────────
@@ -32,6 +53,11 @@ def require_user(fn):
     def wrapper(*args, **kwargs):
         token = request.cookies.get("br_session", "")
         if token:
+            now = time.time()
+            hit = _session_cache.get(token)
+            if hit and hit[0] > now:
+                g.user = hit[1]
+                return fn(*args, **kwargs)
             with db.connect() as conn:
                 row = conn.execute(
                     """SELECT u.id, u.email, u.role FROM sessions s
@@ -41,6 +67,7 @@ def require_user(fn):
                 ).fetchone()
             if row:
                 g.user = dict(row)
+                _session_cache[token] = (now + SESSION_CACHE_TTL, g.user)
                 return fn(*args, **kwargs)
         return jsonify(error="not signed in"), 401
     return wrapper
@@ -101,6 +128,7 @@ def logout():
     token = request.cookies.get("br_session", "")
     with db.connect() as conn:
         conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+    _session_cache.pop(token, None)          # don't let the cache keep a signed-out token alive
     resp = jsonify(ok=True)
     resp.delete_cookie("br_session")
     return resp
@@ -293,12 +321,11 @@ def add_comment(iid):
 # ── attachments ─────────────────────────────────────────────────────────────
 
 def _attachment(iid: str, filename: str):
-    with db.connect() as conn:
-        row = conn.execute("SELECT project_id FROM issues WHERE id = ?", (iid,)).fetchone()
-    if row is None:
+    pid = _project_of(iid)
+    if pid is None:
         return jsonify(error="not found"), 404
     # Path is built from validated DB ids + a fixed filename — no client-supplied path parts.
-    path = os.path.join(UPLOAD_ROOT, row["project_id"], iid, filename)
+    path = os.path.join(UPLOAD_ROOT, pid, iid, filename)
     if not os.path.exists(path):
         return jsonify(error="no such attachment"), 404
     return send_file(path)
@@ -334,11 +361,8 @@ def logs(iid):
 
 
 def _clip_dir(iid: str):
-    with db.connect() as conn:
-        row = conn.execute("SELECT project_id FROM issues WHERE id = ?", (iid,)).fetchone()
-    if row is None:
-        return None
-    return os.path.join(UPLOAD_ROOT, row["project_id"], iid, "clip")
+    pid = _project_of(iid)                    # cached — a clip is hundreds of frame requests
+    return os.path.join(UPLOAD_ROOT, pid, iid, "clip") if pid else None
 
 
 @bp.get("/api/issues/<iid>/clip")
