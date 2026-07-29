@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api, Build, fmtTime, Game, IssueRow } from '../api'
 import { Severity, Status } from '../components/Badges'
 import { isUnresolved, STATUS_FLOW, STATUS_LABEL } from '../status'
@@ -27,14 +27,29 @@ interface Group { key: string; name: string; rows: IssueRow[]; unresolved: numbe
 export default function Issues() {
   const { pid = '' } = useParams()
   const nav = useNavigate()
+
+  // Filters live in the URL, not local state — so opening an issue and pressing Back restores the exact
+  // filtered view (and a filtered list is a shareable link). Replace-mode keeps each keystroke out of history.
+  const [sp, setSp] = useSearchParams()
+  const setParam = (key: string, val: string) => setSp(prev => {
+    const next = new URLSearchParams(prev)
+    if (val) next.set(key, val); else next.delete(key)
+    return next
+  }, { replace: true })
+  const build = sp.get('build') || ''
+  const game = sp.get('game') || ''
+  const status = sp.get('status') || ''
+  const date = sp.get('date') || ''
+  const q = sp.get('q') || ''
+  const setBuild = (v: string) => setParam('build', v)
+  const setGame = (v: string) => setParam('game', v)
+  const setStatus = (v: string) => setParam('status', v)
+  const setDate = (v: string) => setParam('date', v)
+  const setQ = (v: string) => setParam('q', v)
+
   const [issues, setIssues] = useState<IssueRow[] | null>(null)
   const [builds, setBuilds] = useState<Build[]>([])
   const [games, setGames] = useState<Game[]>([])
-  const [build, setBuild] = useState('')
-  const [game, setGame] = useState('')
-  const [status, setStatus] = useState('')
-  const [date, setDate] = useState('')
-  const [q, setQ] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set([NO_GAME]))
 
   useEffect(() => { api.builds(pid).then(setBuilds).catch(() => {}) }, [pid])
@@ -128,8 +143,10 @@ export default function Issues() {
   useEffect(() => {
     if (dateDefaulted || issues === null) return
     setDateDefaulted(true)
-    if (dateOptions.length > 0) setDate(dateOptions[0].key)
-  }, [issues, dateOptions, dateDefaulted])
+    // Fresh visit only — if the URL already carries filters (Back from an issue, or a shared link),
+    // respect them instead of forcing Today.
+    if ([...sp.keys()].length === 0 && dateOptions.length > 0) setDate(dateOptions[0].key)
+  }, [issues, dateOptions, dateDefaulted, sp])
 
   const filtered = !!(build || game || status || date || needle)
   const toggle = (k: string) => setCollapsed(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })

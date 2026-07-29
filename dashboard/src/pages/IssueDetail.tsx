@@ -252,6 +252,8 @@ export default function IssueDetail() {
 
   return (
     <div className="page">
+      {/* nav(-1) returns to the exact filtered issues list (filters live in that URL), not a blank list. */}
+      <button className="btn" onClick={() => nav(-1)} style={{ marginBottom: 14 }}>← Back to issues</button>
       <div className="row" style={{ justifyContent: 'space-between', marginBottom: 6 }}>
         <h1 style={{ margin: 0 }}>{issue.title}</h1>
         <div className="row">
