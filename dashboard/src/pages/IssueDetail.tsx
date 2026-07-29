@@ -274,7 +274,10 @@ export default function IssueDetail() {
 
       {issue.siblings.length > 0 && (
         <div className="card pad linked" style={{ marginBottom: 14 }}>
-          <label>🔗 Same multiplayer session — {issue.siblings.length} other device{issue.siblings.length > 1 ? 's' : ''}</label>
+          <label>
+            🔗 Same multiplayer session — {issue.siblings.length} other device{issue.siblings.length > 1 ? 's' : ''}
+            {issue.side && <span className="side-badge" style={{ marginLeft: 8 }}>This device: {issue.side}</span>}
+          </label>
           <div className="sib-list">
             {issue.siblings.map(s => (
               <div key={s.id} className={`sib row-${s.severity}`} onClick={() => nav(`/i/${s.id}`)}>
@@ -282,7 +285,10 @@ export default function IssueDetail() {
                   ? <img className="sib-thumb" src={api.thumbUrl(s.id)} loading="lazy" alt="" />
                   : <div className="sib-thumb placeholder">🐞</div>}
                 <div className="sib-body">
-                  <div className="sib-title">{s.title}</div>
+                  <div className="sib-title">
+                    {s.side && <span className="side-badge" style={{ marginRight: 6 }}>{s.side}</span>}
+                    {s.title}
+                  </div>
                   <div className="muted small">{s.device_model || 'unknown device'} · {s.platform ?? '—'} · {fmtTime(s.created_at)}</div>
                   <div className="row" style={{ gap: 6, marginTop: 4 }}><Severity v={s.severity} /><Status v={s.status} /></div>
                 </div>

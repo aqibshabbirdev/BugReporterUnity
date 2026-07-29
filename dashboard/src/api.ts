@@ -42,10 +42,10 @@ export interface IssueRow {
 }
 export interface Sibling {
   id: string; title: string; severity: string; status: string
-  platform: string | null; device_model: string; has_screenshot: number; created_at: number
+  platform: string | null; device_model: string; side: string; has_screenshot: number; created_at: number
 }
 export interface IssueDetail extends IssueRow {
-  project_id: string
+  project_id: string; side: string
   description: string; device_model: string; os_version: string
   screen_resolution: string; memory_mb: number
   metadata: Record<string, unknown>

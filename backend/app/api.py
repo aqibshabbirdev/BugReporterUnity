@@ -242,15 +242,23 @@ def issue_detail(iid):
         siblings = []
         if row["session"]:
             siblings = conn.execute(
-                """SELECT id, title, severity, status, platform, device_model, has_screenshot, created_at
+                """SELECT id, title, severity, status, platform, device_model, metadata, has_screenshot, created_at
                    FROM issues WHERE project_id = ? AND session = ? AND id <> ?
                    ORDER BY created_at""",
                 (row["project_id"], row["session"], iid),
             ).fetchall()
     out = dict(row)
     out["metadata"] = json.loads(out["metadata"] or "{}")
+    out["side"] = str(out["metadata"].get("side") or "")   # Creator / Joiner, from the game's role metadata
     out["comments"] = [dict(c) for c in comments]
-    out["siblings"] = [dict(s) for s in siblings]
+
+    sib_list = []
+    for s in siblings:
+        d = dict(s)
+        meta = json.loads(d.pop("metadata", None) or "{}")   # drop raw metadata, surface just the side
+        d["side"] = str(meta.get("side") or "")
+        sib_list.append(d)
+    out["siblings"] = sib_list
     return jsonify(out)
 
 
