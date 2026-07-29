@@ -118,6 +118,7 @@ input, select, textarea {
 }
 select { cursor: pointer; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(68,147,248,.18); }
+textarea.notes { width: 100%; resize: vertical; line-height: 1.5; font-family: inherit; }
 label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px; }
 
 /* badges */

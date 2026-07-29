@@ -285,6 +285,19 @@ def update_issue(iid):
     return jsonify(ok=True)
 
 
+@bp.patch("/api/issues/<iid>/notes")
+@require_user
+def set_notes(iid):
+    # The tester has no time to write repro steps mid-gameplay, so the issue's description is editable here
+    # on the dashboard — the proper place for the test-case, filled in at leisure.
+    notes = str((request.get_json(silent=True) or {}).get("notes") or "")[:4000]
+    with db.connect() as conn:
+        if conn.execute("SELECT 1 FROM issues WHERE id = ?", (iid,)).fetchone() is None:
+            return jsonify(error="not found"), 404
+        conn.execute("UPDATE issues SET description = ?, updated_at = ? WHERE id = ?", (notes, db.now(), iid))
+    return jsonify(ok=True)
+
+
 @bp.delete("/api/issues/<iid>")
 @require_user
 def delete_issue(iid):

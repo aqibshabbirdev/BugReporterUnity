@@ -191,6 +191,11 @@ export default function IssueDetail() {
   const [zoom, setZoom] = useState(false)
   const [fixedIn, setFixedIn] = useState('')
   const [comment, setComment] = useState('')
+  const [commenting, setCommenting] = useState(false)
+  const [commentErr, setCommentErr] = useState('')
+  const [notes, setNotes] = useState('')
+  const [notesDirty, setNotesDirty] = useState(false)
+  const [notesSaved, setNotesSaved] = useState(false)
   const [delOpen, setDelOpen] = useState(false)
   const [delCode, setDelCode] = useState('')
   const [delErr, setDelErr] = useState('')
@@ -199,7 +204,12 @@ export default function IssueDetail() {
   // Seed the build box from the issue so an already-stamped build is visible (and survives a
   // re-save) instead of showing blank next to a "waiting for test in 0.9.53" badge.
   const load = () => {
-    api.issue(iid).then(d => { setIssue(d); setFixedIn(d.fixed_in_build ?? '') }).catch(() => {})
+    api.issue(iid).then(d => {
+      setIssue(d)
+      setFixedIn(d.fixed_in_build ?? '')
+      // Don't clobber unsaved edits if a reload lands mid-typing.
+      setNotes(prev => (notesDirty ? prev : (d.description ?? '')))
+    }).catch(() => {})
   }
   useEffect(load, [iid])
 
@@ -212,10 +222,28 @@ export default function IssueDetail() {
     load()
   }
   const addComment = async () => {
-    if (!comment.trim()) return
-    await api.comment(iid, comment.trim())
-    setComment('')
-    load()
+    if (!comment.trim() || commenting) return
+    setCommenting(true); setCommentErr('')
+    try {
+      await api.comment(iid, comment.trim())
+      setComment('')
+      load()
+    } catch (e) {
+      setCommentErr(e instanceof Error ? e.message : 'could not post comment')  // was failing silently
+    } finally {
+      setCommenting(false)
+    }
+  }
+  const saveNotes = async () => {
+    setNotesSaved(false)
+    try {
+      await api.setNotes(iid, notes)
+      setNotesDirty(false)
+      setNotesSaved(true)
+      load()
+    } catch {
+      setNotesSaved(false)
+    }
   }
   const doDelete = async () => {
     if (!issue) return
@@ -264,7 +292,20 @@ export default function IssueDetail() {
         </div>
       )}
 
-      {issue.description && <div className="card pad" style={{ marginBottom: 14 }}>{issue.description}</div>}
+      <div className="card pad" style={{ marginBottom: 14 }}>
+        <label>Repro steps / notes</label>
+        <div className="muted small" style={{ marginBottom: 8 }}>
+          Testers can't type this mid-game — write the test case here: what you did, what should happen, what happened.
+        </div>
+        <textarea className="notes" rows={4} placeholder="1. Open Cricket online…&#10;2. …&#10;Expected: …&#10;Got: …"
+                  value={notes}
+                  onChange={e => { setNotes(e.target.value); setNotesDirty(true); setNotesSaved(false) }} />
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="primary" onClick={saveNotes} disabled={!notesDirty}>Save notes</button>
+          {notesSaved && <span className="small" style={{ color: 'var(--green)' }}>Saved ✓</span>}
+          {notesDirty && <span className="muted small">unsaved changes</span>}
+        </div>
+      </div>
 
       <ClipPlayer iid={iid} />
 
@@ -325,10 +366,16 @@ export default function IssueDetail() {
             <div>{c.text}</div>
           </div>
         ))}
-        <div className="row" style={{ marginTop: 10 }}>
-          <input placeholder="Add a comment…" value={comment} onChange={e => setComment(e.target.value)}
-                 onKeyDown={e => e.key === 'Enter' && addComment()} style={{ flex: 1 }} />
-          <button className="primary" onClick={addComment}>Comment</button>
+        <div style={{ marginTop: 10 }}>
+          <textarea className="notes" rows={2} placeholder="Add a comment…  (⌘/Ctrl+Enter to post)"
+                    value={comment} onChange={e => setComment(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) addComment() }} />
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="primary" onClick={addComment} disabled={commenting || !comment.trim()}>
+              {commenting ? 'Posting…' : 'Comment'}
+            </button>
+            {commentErr && <span className="error small">{commentErr}</span>}
+          </div>
         </div>
       </div>
 

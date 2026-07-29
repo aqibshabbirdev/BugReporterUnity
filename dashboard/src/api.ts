@@ -81,6 +81,8 @@ export const api = {
     req<{ ok: boolean }>(`/api/issues/${iid}`, {
       method: 'PATCH', body: JSON.stringify({ status, fixedInBuild }),
     }),
+  setNotes: (iid: string, notes: string) =>
+    req<{ ok: boolean }>(`/api/issues/${iid}/notes`, { method: 'PATCH', body: JSON.stringify({ notes }) }),
   comment: (iid: string, text: string) =>
     req<{ ok: boolean }>(`/api/issues/${iid}/comments`, { method: 'POST', body: JSON.stringify({ text }) }),
   deleteIssue: (iid: string, code: string) =>
