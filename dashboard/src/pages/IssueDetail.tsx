@@ -312,27 +312,7 @@ export default function IssueDetail() {
       )}
 
       <div className="detail-grid">
-        {/* Left: the evidence — what actually happened. */}
-        <div className="col">
-          {issue.has_screenshot > 0 && (
-            <div className="card pad">
-              <label>Screenshot</label>
-              <img className="shot" src={api.screenshotUrl(iid)} onClick={() => setZoom(true)} />
-              {zoom && (
-                <div className="shot-full" onClick={() => setZoom(false)}>
-                  <img src={api.screenshotUrl(iid)} />
-                </div>
-              )}
-            </div>
-          )}
-          <ClipPlayer iid={iid} />
-          <div className="card pad">
-            <label>Logs</label>
-            <LogViewer iid={iid} />
-          </div>
-        </div>
-
-        {/* Right: what a human writes / the captured context. */}
+        {/* Left: what a human writes + the logs to read against it — logs fill the space under the test case. */}
         <div className="col">
           <div className="card pad">
             <label>Test case</label>
@@ -350,6 +330,26 @@ export default function IssueDetail() {
               {notesDirty && <span className="muted small">unsaved changes</span>}
             </div>
           </div>
+          <div className="card pad">
+            <label>Logs</label>
+            <LogViewer iid={iid} />
+          </div>
+        </div>
+
+        {/* Right: the visual evidence — screenshot + clip. */}
+        <div className="col">
+          {issue.has_screenshot > 0 && (
+            <div className="card pad">
+              <label>Screenshot</label>
+              <img className="shot" src={api.screenshotUrl(iid)} onClick={() => setZoom(true)} />
+              {zoom && (
+                <div className="shot-full" onClick={() => setZoom(false)}>
+                  <img src={api.screenshotUrl(iid)} />
+                </div>
+              )}
+            </div>
+          )}
+          <ClipPlayer iid={iid} />
 
           {Object.keys(issue.metadata).length > 0 && (
             <div className="card pad">
