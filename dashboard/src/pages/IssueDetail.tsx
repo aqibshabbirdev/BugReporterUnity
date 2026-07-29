@@ -265,6 +265,26 @@ export default function IssueDetail() {
         {issue.os_version} · {issue.screen_resolution} · {issue.memory_mb} MB · reported {fmtTime(issue.created_at)}
       </div>
 
+      {/* Triage first — the primary action on any issue. */}
+      <div className="card pad" style={{ marginBottom: 14 }}>
+        <label>Status</label>
+        <div className="status-picker">
+          {STATUS_FLOW.map(s => (
+            <button key={s} title={STATUS_HINT[s]}
+                    className={`status-btn st-btn-${s}${issue.status === s ? ' active' : ''}`}
+                    onClick={() => setStatus(s)}>
+              {STATUS_LABEL[s]}
+            </button>
+          ))}
+        </div>
+        <div className="muted small" style={{ marginTop: 8 }}>{STATUS_HINT[issue.status] ?? ''}</div>
+        <div className="row" style={{ marginTop: 10 }}>
+          <input placeholder="fixed in build… (e.g. 0.9.53)" value={fixedIn}
+                 onChange={e => setFixedIn(e.target.value)} className="mono" />
+          <span className="muted small">stamped on the issue when you move it to “Waiting for test”</span>
+        </div>
+      </div>
+
       {issue.siblings.length > 0 && (
         <div className="card pad linked" style={{ marginBottom: 14 }}>
           <label>
@@ -291,70 +311,56 @@ export default function IssueDetail() {
         </div>
       )}
 
-      <div className="card pad" style={{ marginBottom: 14 }}>
-        <label>Test case</label>
-        <div className="muted small" style={{ marginBottom: 8 }}>
-          Testers can't type this mid-game — fill in the test case here: the steps, what should happen, what happened.
-        </div>
-        <textarea className="notes" rows={7} value={notes}
-                  onChange={e => { setNotes(e.target.value); setNotesDirty(true); setNotesSaved(false) }} />
-        <div className="row" style={{ marginTop: 8 }}>
-          <button className="primary" onClick={saveNotes} disabled={!notesDirty}>Save test case</button>
-          <button onClick={() => { setNotes(TEST_CASE_TEMPLATE); setNotesDirty(true); setNotesSaved(false) }}>
-            Reset to template
-          </button>
-          {notesSaved && <span className="small" style={{ color: 'var(--green)' }}>Saved ✓</span>}
-          {notesDirty && <span className="muted small">unsaved changes</span>}
-        </div>
-      </div>
-
-      <ClipPlayer iid={iid} />
-
-      {Object.keys(issue.metadata).length > 0 && (
-        <div className="card pad" style={{ marginBottom: 14 }}>
-          <label>Game state at report time</label>
-          <div className="chips">
-            {Object.entries(issue.metadata).map(([k, v]) => (
-              <span className="chip mono" key={k}><b>{k}</b>{String(v)}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: issue.has_screenshot ? '1fr 1fr' : '1fr', gap: 14 }}>
-        {issue.has_screenshot > 0 && (
+      <div className="detail-grid">
+        {/* Left: the evidence — what actually happened. */}
+        <div className="col">
+          {issue.has_screenshot > 0 && (
+            <div className="card pad">
+              <label>Screenshot</label>
+              <img className="shot" src={api.screenshotUrl(iid)} onClick={() => setZoom(true)} />
+              {zoom && (
+                <div className="shot-full" onClick={() => setZoom(false)}>
+                  <img src={api.screenshotUrl(iid)} />
+                </div>
+              )}
+            </div>
+          )}
+          <ClipPlayer iid={iid} />
           <div className="card pad">
-            <label>Screenshot</label>
-            <img className="shot" src={api.screenshotUrl(iid)} onClick={() => setZoom(true)} />
-            {zoom && (
-              <div className="shot-full" onClick={() => setZoom(false)}>
-                <img src={api.screenshotUrl(iid)} />
-              </div>
-            )}
+            <label>Logs</label>
+            <LogViewer iid={iid} />
           </div>
-        )}
-        <div className="card pad">
-          <label>Logs</label>
-          <LogViewer iid={iid} />
         </div>
-      </div>
 
-      <div className="card pad" style={{ marginTop: 14 }}>
-        <label>Status</label>
-        <div className="status-picker">
-          {STATUS_FLOW.map(s => (
-            <button key={s} title={STATUS_HINT[s]}
-                    className={`status-btn st-btn-${s}${issue.status === s ? ' active' : ''}`}
-                    onClick={() => setStatus(s)}>
-              {STATUS_LABEL[s]}
-            </button>
-          ))}
-        </div>
-        <div className="muted small" style={{ marginTop: 8 }}>{STATUS_HINT[issue.status] ?? ''}</div>
-        <div className="row" style={{ marginTop: 10 }}>
-          <input placeholder="fixed in build… (e.g. 0.9.53)" value={fixedIn}
-                 onChange={e => setFixedIn(e.target.value)} className="mono" />
-          <span className="muted small">stamped on the issue when you move it to “Waiting for test”</span>
+        {/* Right: what a human writes / the captured context. */}
+        <div className="col">
+          <div className="card pad">
+            <label>Test case</label>
+            <div className="muted small" style={{ marginBottom: 8 }}>
+              Testers can't type this mid-game — fill it in here: the steps, what should happen, what happened.
+            </div>
+            <textarea className="notes" rows={8} value={notes}
+                      onChange={e => { setNotes(e.target.value); setNotesDirty(true); setNotesSaved(false) }} />
+            <div className="row" style={{ marginTop: 8, flexWrap: 'wrap' }}>
+              <button className="primary" onClick={saveNotes} disabled={!notesDirty}>Save test case</button>
+              <button onClick={() => { setNotes(TEST_CASE_TEMPLATE); setNotesDirty(true); setNotesSaved(false) }}>
+                Reset to template
+              </button>
+              {notesSaved && <span className="small" style={{ color: 'var(--green)' }}>Saved ✓</span>}
+              {notesDirty && <span className="muted small">unsaved changes</span>}
+            </div>
+          </div>
+
+          {Object.keys(issue.metadata).length > 0 && (
+            <div className="card pad">
+              <label>Game state at report time</label>
+              <div className="chips">
+                {Object.entries(issue.metadata).map(([k, v]) => (
+                  <span className="chip mono" key={k}><b>{k}</b>{String(v)}</span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

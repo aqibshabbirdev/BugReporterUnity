@@ -268,8 +268,13 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
               image-rendering: auto; }
 .clip-frame + .row input[type=range] { accent-color: var(--accent); }
 
+/* issue detail — evidence (left) + notes/context (right) */
+.detail-grid { display: grid; grid-template-columns: 1.55fr 1fr; gap: 14px; align-items: start; margin-bottom: 14px; }
+.detail-grid > .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+@media (max-width: 900px) { .detail-grid { grid-template-columns: 1fr; } }
+
 /* screenshot */
-.shot { max-width: 100%; border-radius: 8px; border: 1px solid var(--border); cursor: zoom-in; }
+.shot { max-width: 100%; max-height: 62vh; object-fit: contain; object-position: top; border-radius: 8px; border: 1px solid var(--border); cursor: zoom-in; }
 .shot-full {
   position: fixed; inset: 0; background: rgba(0,0,0,0.85);
   display: flex; align-items: center; justify-content: center; cursor: zoom-out; z-index: 50;
