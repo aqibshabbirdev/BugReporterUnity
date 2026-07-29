@@ -4,6 +4,15 @@ import { api, fmtTime, IssueDetail as Detail } from '../api'
 import { Severity, Status } from '../components/Badges'
 import { STATUS_FLOW, STATUS_HINT, STATUS_LABEL } from '../status'
 
+// Prefilled when an issue has no test case yet, so whoever picks it up just fills the blanks
+// instead of facing an empty box.
+const TEST_CASE_TEMPLATE = `Steps to reproduce:
+1.
+2.
+3.
+Expected:
+Actual: `
+
 // ── Unity rich text ──────────────────────────────────────────────────────────
 // Game logs arrive with Unity's console markup (<color=…>, <b>, <i>, <u>, <size=…>). We render it as
 // real styling instead of raw tags. Input is untrusted log text, so we NEVER use innerHTML — every text
@@ -190,9 +199,6 @@ export default function IssueDetail() {
   const [issue, setIssue] = useState<Detail | null>(null)
   const [zoom, setZoom] = useState(false)
   const [fixedIn, setFixedIn] = useState('')
-  const [comment, setComment] = useState('')
-  const [commenting, setCommenting] = useState(false)
-  const [commentErr, setCommentErr] = useState('')
   const [notes, setNotes] = useState('')
   const [notesDirty, setNotesDirty] = useState(false)
   const [notesSaved, setNotesSaved] = useState(false)
@@ -207,8 +213,8 @@ export default function IssueDetail() {
     api.issue(iid).then(d => {
       setIssue(d)
       setFixedIn(d.fixed_in_build ?? '')
-      // Don't clobber unsaved edits if a reload lands mid-typing.
-      setNotes(prev => (notesDirty ? prev : (d.description ?? '')))
+      // Don't clobber unsaved edits if a reload lands mid-typing. Empty description → show the template.
+      setNotes(prev => (notesDirty ? prev : (d.description || TEST_CASE_TEMPLATE)))
     }).catch(() => {})
   }
   useEffect(load, [iid])
@@ -220,19 +226,6 @@ export default function IssueDetail() {
     // on open/pending and keeps the stored one when we send nothing.
     await api.setStatus(iid, status, status === 'waiting_for_test' ? fixedIn || undefined : undefined)
     load()
-  }
-  const addComment = async () => {
-    if (!comment.trim() || commenting) return
-    setCommenting(true); setCommentErr('')
-    try {
-      await api.comment(iid, comment.trim())
-      setComment('')
-      load()
-    } catch (e) {
-      setCommentErr(e instanceof Error ? e.message : 'could not post comment')  // was failing silently
-    } finally {
-      setCommenting(false)
-    }
   }
   const saveNotes = async () => {
     setNotesSaved(false)
@@ -299,15 +292,17 @@ export default function IssueDetail() {
       )}
 
       <div className="card pad" style={{ marginBottom: 14 }}>
-        <label>Repro steps / notes</label>
+        <label>Test case</label>
         <div className="muted small" style={{ marginBottom: 8 }}>
-          Testers can't type this mid-game — write the test case here: what you did, what should happen, what happened.
+          Testers can't type this mid-game — fill in the test case here: the steps, what should happen, what happened.
         </div>
-        <textarea className="notes" rows={4} placeholder="1. Open Cricket online…&#10;2. …&#10;Expected: …&#10;Got: …"
-                  value={notes}
+        <textarea className="notes" rows={7} value={notes}
                   onChange={e => { setNotes(e.target.value); setNotesDirty(true); setNotesSaved(false) }} />
         <div className="row" style={{ marginTop: 8 }}>
-          <button className="primary" onClick={saveNotes} disabled={!notesDirty}>Save notes</button>
+          <button className="primary" onClick={saveNotes} disabled={!notesDirty}>Save test case</button>
+          <button onClick={() => { setNotes(TEST_CASE_TEMPLATE); setNotesDirty(true); setNotesSaved(false) }}>
+            Reset to template
+          </button>
           {notesSaved && <span className="small" style={{ color: 'var(--green)' }}>Saved ✓</span>}
           {notesDirty && <span className="muted small">unsaved changes</span>}
         </div>
@@ -360,28 +355,6 @@ export default function IssueDetail() {
           <input placeholder="fixed in build… (e.g. 0.9.53)" value={fixedIn}
                  onChange={e => setFixedIn(e.target.value)} className="mono" />
           <span className="muted small">stamped on the issue when you move it to “Waiting for test”</span>
-        </div>
-      </div>
-
-      <div className="card pad" style={{ marginTop: 14 }}>
-        <label>Comments</label>
-        {issue.comments.length === 0 && <div className="muted small" style={{ margin: '6px 0 10px' }}>None yet.</div>}
-        {issue.comments.map((c, i) => (
-          <div key={i} style={{ margin: '10px 0' }}>
-            <span className="small"><b>{c.author}</b> <span className="muted">{fmtTime(c.created_at)}</span></span>
-            <div>{c.text}</div>
-          </div>
-        ))}
-        <div style={{ marginTop: 10 }}>
-          <textarea className="notes" rows={2} placeholder="Add a comment…  (⌘/Ctrl+Enter to post)"
-                    value={comment} onChange={e => setComment(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) addComment() }} />
-          <div className="row" style={{ marginTop: 8 }}>
-            <button className="primary" onClick={addComment} disabled={commenting || !comment.trim()}>
-              {commenting ? 'Posting…' : 'Comment'}
-            </button>
-            {commentErr && <span className="error small">{commentErr}</span>}
-          </div>
         </div>
       </div>
 
