@@ -227,6 +227,17 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .sib-title { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
 .side-badge { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 999px; font-size: 11px;
               font-weight: 700; background: rgba(188,140,255,.16); color: #bc8cff; border: 1px solid rgba(188,140,255,.35); }
+.device-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.device-tab { display: flex; align-items: center; gap: 8px; text-align: left; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border-soft); border-left: 3px solid var(--border);
+  border-radius: 8px; padding: 8px 12px; cursor: pointer; }
+.device-tab:hover { border-color: var(--faint); }
+.device-tab.active { border-color: var(--accent); background: var(--bg-hover); }
+.device-tab.row-crash  { border-left-color: var(--red); }
+.device-tab.row-high   { border-left-color: var(--orange); }
+.device-tab.row-normal { border-left-color: var(--accent); }
+.device-tab.row-low    { border-left-color: var(--faint); }
+.dt-dev { font-weight: 600; font-size: 13.5px; }
 
 /* project cards */
 .proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }

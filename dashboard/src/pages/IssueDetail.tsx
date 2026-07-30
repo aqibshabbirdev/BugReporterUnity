@@ -206,6 +206,9 @@ export default function IssueDetail() {
   const [delCode, setDelCode] = useState('')
   const [delErr, setDelErr] = useState('')
   const [deleting, setDeleting] = useState(false)
+  // Which device's evidence (screenshot/clip/logs) is showing. The test case + status are incident-level.
+  const [activeIid, setActiveIid] = useState(iid)
+  useEffect(() => { setActiveIid(iid) }, [iid])
 
   // Seed the build box from the issue so an already-stamped build is visible (and survives a
   // re-save) instead of showing blank next to a "waiting for test in 0.9.53" badge.
@@ -220,6 +223,16 @@ export default function IssueDetail() {
   useEffect(load, [iid])
 
   if (!issue) return <div className="page"><div className="empty">Loading…</div></div>
+
+  // Every device that reported this one incident: this report + its same-session, same-time siblings.
+  // Creator first, then joiners by time — so the tabs read Device 1, Device 2…
+  const devices = [
+    { id: iid, side: issue.side, device_model: issue.device_model, platform: issue.platform,
+      severity: issue.severity, has_screenshot: issue.has_screenshot, has_logs: issue.has_logs, created_at: issue.created_at },
+    ...issue.siblings.map(s => ({ id: s.id, side: s.side, device_model: s.device_model, platform: s.platform,
+      severity: s.severity, has_screenshot: s.has_screenshot, has_logs: s.has_logs, created_at: s.created_at })),
+  ].sort((a, b) => (a.side === 'Creator' ? -1 : b.side === 'Creator' ? 1 : a.created_at - b.created_at))
+  const active = devices.find(d => d.id === activeIid) ?? devices[0]
 
   const setStatus = async (status: string) => {
     // The build stamp only travels with the state that means "a fix exists"; the server clears it
@@ -287,27 +300,17 @@ export default function IssueDetail() {
         </div>
       </div>
 
-      {issue.siblings.length > 0 && (
+      {devices.length > 1 && (
         <div className="card pad linked" style={{ marginBottom: 14 }}>
-          <label>
-            🔗 Same multiplayer session — {issue.siblings.length} other device{issue.siblings.length > 1 ? 's' : ''}
-            {issue.side && <span className="side-badge" style={{ marginLeft: 8 }}>This device: {issue.side}</span>}
-          </label>
-          <div className="sib-list">
-            {issue.siblings.map(s => (
-              <div key={s.id} className={`sib row-${s.severity}`} onClick={() => nav(`/i/${s.id}`)}>
-                {s.has_screenshot > 0
-                  ? <img className="sib-thumb" src={api.thumbUrl(s.id)} loading="lazy" alt="" />
-                  : <div className="sib-thumb placeholder">🐞</div>}
-                <div className="sib-body">
-                  <div className="sib-title">
-                    {s.side && <span className="side-badge" style={{ marginRight: 6 }}>{s.side}</span>}
-                    {s.title}
-                  </div>
-                  <div className="muted small">{s.device_model || 'unknown device'} · {s.platform ?? '—'} · {fmtTime(s.created_at)}</div>
-                  <div className="row" style={{ gap: 6, marginTop: 4 }}><Severity v={s.severity} /><Status v={s.status} /></div>
-                </div>
-              </div>
+          <label>🔗 Same multiplayer session — {devices.length} devices reported this. Switch to see each device's evidence:</label>
+          <div className="device-tabs">
+            {devices.map((d, n) => (
+              <button key={d.id} className={`device-tab row-${d.severity} ${d.id === activeIid ? 'active' : ''}`}
+                      onClick={() => setActiveIid(d.id)}>
+                <span className="side-badge">{d.side || `Device ${n + 1}`}</span>
+                <span className="dt-dev">{d.device_model || 'device'}</span>
+                <span className="muted small">{d.platform ?? '—'} · {fmtTime(d.created_at)}</span>
+              </button>
             ))}
           </div>
         </div>
@@ -333,25 +336,25 @@ export default function IssueDetail() {
             </div>
           </div>
           <div className="card pad">
-            <label>Logs</label>
-            <LogViewer iid={iid} />
+            <label>Logs{devices.length > 1 && active.side ? ` — ${active.side}` : ''}</label>
+            <LogViewer iid={activeIid} />
           </div>
         </div>
 
-        {/* Right: the visual evidence — screenshot + clip. */}
+        {/* Right: the visual evidence for the selected device — screenshot + clip. */}
         <div className="col">
-          {issue.has_screenshot > 0 && (
+          {active.has_screenshot > 0 && (
             <div className="card pad">
-              <label>Screenshot</label>
-              <img className="shot" src={api.screenshotUrl(iid)} onClick={() => setZoom(true)} />
+              <label>Screenshot{devices.length > 1 && active.side ? ` — ${active.side}` : ''}</label>
+              <img className="shot" src={api.screenshotUrl(activeIid)} onClick={() => setZoom(true)} />
               {zoom && (
                 <div className="shot-full" onClick={() => setZoom(false)}>
-                  <img src={api.screenshotUrl(iid)} />
+                  <img src={api.screenshotUrl(activeIid)} />
                 </div>
               )}
             </div>
           )}
-          <ClipPlayer iid={iid} />
+          <ClipPlayer iid={activeIid} />
 
           {Object.keys(issue.metadata).length > 0 && (
             <div className="card pad">

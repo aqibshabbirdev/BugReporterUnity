@@ -42,7 +42,8 @@ export interface IssueRow {
 }
 export interface Sibling {
   id: string; title: string; severity: string; status: string
-  platform: string | null; device_model: string; side: string; has_screenshot: number; created_at: number
+  platform: string | null; device_model: string; side: string
+  has_screenshot: number; has_logs: number; created_at: number
 }
 export interface IssueDetail extends IssueRow {
   project_id: string; side: string

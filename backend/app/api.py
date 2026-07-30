@@ -210,6 +210,10 @@ def rotate_key(pid):
 # on the build/game filters mean. Legacy values are remapped on boot by db._migrate.
 STATUSES = ("open", "pending", "waiting_for_test", "closed")
 
+# Reports of one multiplayer bug land from both devices within seconds; a different bug later in the
+# same match is minutes away. This window (seconds) separates the two. Mirrors CLUSTER_WINDOW on the client.
+INCIDENT_WINDOW = 120
+
 
 @bp.get("/api/projects/<pid>/issues")
 @require_user
@@ -238,14 +242,18 @@ def issue_detail(iid):
         comments = conn.execute(
             "SELECT author, text, created_at FROM comments WHERE issue_id = ? ORDER BY created_at", (iid,)
         ).fetchall()
-        # Same multiplayer session, other devices — the other half/halves of one incident.
+        # Other devices in the SAME incident: same session AND reported close in time. A tester files
+        # several different bugs in one match, so session alone would wrongly merge them — the ±window
+        # keeps only the reports of this one bug (both devices reacting to the same moment).
         siblings = []
         if row["session"]:
             siblings = conn.execute(
-                """SELECT id, title, severity, status, platform, device_model, metadata, has_screenshot, created_at
+                """SELECT id, title, severity, status, platform, device_model, metadata,
+                          has_screenshot, has_logs, created_at
                    FROM issues WHERE project_id = ? AND session = ? AND id <> ?
+                     AND ABS(created_at - ?) <= ?
                    ORDER BY created_at""",
-                (row["project_id"], row["session"], iid),
+                (row["project_id"], row["session"], iid, row["created_at"], INCIDENT_WINDOW),
             ).fetchall()
     out = dict(row)
     out["metadata"] = json.loads(out["metadata"] or "{}")

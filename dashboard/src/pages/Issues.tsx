@@ -22,7 +22,40 @@ const avatarStyle = (name: string) => ({
   background: `linear-gradient(135deg, hsl(${hue(name)} 65% 45%), hsl(${(hue(name) + 40) % 360} 65% 38%))`,
 })
 
-interface Group { key: string; name: string; rows: IssueRow[]; unresolved: number; crash: number }
+// Same session + reported within this many seconds = ONE incident (both devices, same bug). A tester can
+// file several DIFFERENT bugs in one match, so session alone over-merges — the time gap separates them.
+const CLUSTER_WINDOW = 120
+
+interface Incident { rep: IssueRow; members: IssueRow[]; crash: boolean; unresolved: boolean }
+interface Group { key: string; name: string; incidents: Incident[]; unresolved: number; crash: number }
+
+// Group reports that belong to one incident. No-session (lobby) reports are always their own incident.
+function clusterRows(rows: IssueRow[]): IssueRow[][] {
+  const bySession = new Map<string, IssueRow[]>()
+  const clusters: IssueRow[][] = []
+  for (const i of rows) {
+    if (!i.session) { clusters.push([i]); continue }
+    const arr = bySession.get(i.session) ?? []; arr.push(i); bySession.set(i.session, arr)
+  }
+  for (const arr of bySession.values()) {
+    arr.sort((a, b) => a.created_at - b.created_at)
+    let cur: IssueRow[] = []
+    for (const i of arr) {
+      if (cur.length && i.created_at - cur[cur.length - 1].created_at > CLUSTER_WINDOW) { clusters.push(cur); cur = [] }
+      cur.push(i)
+    }
+    if (cur.length) clusters.push(cur)
+  }
+  return clusters
+}
+function toIncident(members: IssueRow[]): Incident {
+  return {
+    rep: members[0],   // earliest — the card shown / opened on click; detail page shows every device
+    members,
+    crash: members.some(m => m.severity === 'crash'),
+    unresolved: members.some(m => isUnresolved(m.status)),
+  }
+}
 
 export default function Issues() {
   const { pid = '' } = useParams()
@@ -68,16 +101,18 @@ export default function Issues() {
       (!date || dayKey(i.created_at) === date)),
     [issues, needle, date],
   )
-  const rows = useMemo(() => scoped.filter(i => !status || i.status === status), [scoped, status])
+  // Cluster reports into incidents (same session + close in time = one multi-device bug) so the page
+  // shows and counts INCIDENTS, not raw reports.
+  const scopedIncidents = useMemo(() => clusterRows(scoped).map(toIncident), [scoped])
+  const incidents = useMemo(() => scopedIncidents.filter(x => !status || x.rep.status === status), [scopedIncidents, status])
 
-  // Counted over `scoped` — every filter EXCEPT status — so a tab reports what it would show instead
-  // of collapsing to the tab you are already standing on.
+  // Counted over incidents, every filter EXCEPT status, so a tab reports what it would show.
   const statusCounts = useMemo(() => {
-    const c: Record<string, number> = { '': scoped.length }
+    const c: Record<string, number> = { '': scopedIncidents.length }
     for (const s of STATUS_FLOW) c[s] = 0
-    for (const i of scoped) c[i.status] = (c[i.status] ?? 0) + 1
+    for (const x of scopedIncidents) c[x.rep.status] = (c[x.rep.status] ?? 0) + 1
     return c
-  }, [scoped])
+  }, [scopedIncidents])
 
   // Date options come from the loaded issues (not a fixed calendar) so every entry has something behind it.
   // Derived from `issues`, not `rows`, so picking a date doesn't collapse the list you're picking from.
@@ -108,34 +143,27 @@ export default function Issues() {
       })
   }, [issues])
   const stats = useMemo(() => ({
-    total: rows.length,
-    unresolved: rows.filter(i => isUnresolved(i.status)).length,
-    crash: rows.filter(i => i.severity === 'crash').length,
-  }), [rows])
-
-  // Sessions that appear on more than one report = multi-device incidents; badge those cards.
-  const linkedSessions = useMemo(() => {
-    const counts = new Map<string, number>()
-    for (const i of issues ?? []) if (i.session) counts.set(i.session, (counts.get(i.session) ?? 0) + 1)
-    return new Set([...counts].filter(([, n]) => n > 1).map(([s]) => s))
-  }, [issues])
+    total: incidents.length,
+    unresolved: incidents.filter(x => x.unresolved).length,
+    crash: incidents.filter(x => x.crash).length,
+  }), [incidents])
 
   const groups = useMemo<Group[]>(() => {
     const map = new Map<string, Group>()
-    for (const i of rows) {
-      const key = i.game || NO_GAME
+    for (const x of incidents) {
+      const key = x.rep.game || NO_GAME
       let g = map.get(key)
-      if (!g) { g = { key, name: i.game || 'No game', rows: [], unresolved: 0, crash: 0 }; map.set(key, g) }
-      g.rows.push(i)
-      if (isUnresolved(i.status)) g.unresolved++
-      if (i.severity === 'crash') g.crash++
+      if (!g) { g = { key, name: x.rep.game || 'No game', incidents: [], unresolved: 0, crash: 0 }; map.set(key, g) }
+      g.incidents.push(x)
+      if (x.unresolved) g.unresolved++
+      if (x.crash) g.crash++
     }
     return [...map.values()].sort((a, b) => {
       if (a.key === NO_GAME) return 1
       if (b.key === NO_GAME) return -1
-      return b.crash - a.crash || b.unresolved - a.unresolved || b.rows.length - a.rows.length
+      return b.crash - a.crash || b.unresolved - a.unresolved || b.incidents.length - a.incidents.length
     })
-  }, [rows])
+  }, [incidents])
 
   // Land on the newest day that actually has issues — Today, or Yesterday if today is quiet, and so on.
   // Runs once on first load only, so it never overrides a date the user picked (filter changes refetch).
@@ -219,29 +247,33 @@ export default function Issues() {
                 <span className="gg-counts">
                   {g.crash > 0 && <span className="gg-count crash">{g.crash} crash</span>}
                   {g.unresolved > 0 && <span className="gg-count open">{g.unresolved} unresolved</span>}
-                  <span className="gg-count">{g.rows.length}</span>
+                  <span className="gg-count">{g.incidents.length}</span>
                 </span>
               </div>
               {isOpen && (
                 <div className="issue-grid">
-                  {g.rows.map(i => (
-                    <div key={i.id} className={`issue-card row-${i.severity}`} onClick={() => nav(`/i/${i.id}`)}>
-                      {i.session && linkedSessions.has(i.session) && <span className="link-badge" title="Linked multiplayer session">🔗 linked</span>}
-                      {i.has_screenshot > 0
-                        ? <img className="issue-thumb" src={api.thumbUrl(i.id)} loading="lazy" decoding="async" alt="" />
-                        : <div className="issue-thumb placeholder">🐞</div>}
-                      <div className="issue-body">
-                        <div className="issue-title">{i.title}</div>
-                        <div className="issue-meta">
-                          <Severity v={i.severity} />
-                          <Status v={i.status} fixedIn={i.fixed_in_build} />
-                        </div>
-                        <div className="issue-foot">
-                          <span className="mono">{i.build_version}</span> · {i.platform ?? '—'} · {fmtTime(i.created_at)}
+                  {g.incidents.map(x => {
+                    const i = x.rep
+                    const n = x.members.length
+                    return (
+                      <div key={i.id} className={`issue-card row-${i.severity}`} onClick={() => nav(`/i/${i.id}`)}>
+                        {n > 1 && <span className="link-badge" title={`${n} devices reported this incident`}>🔗 {n} devices</span>}
+                        {i.has_screenshot > 0
+                          ? <img className="issue-thumb" src={api.thumbUrl(i.id)} loading="lazy" decoding="async" alt="" />
+                          : <div className="issue-thumb placeholder">🐞</div>}
+                        <div className="issue-body">
+                          <div className="issue-title">{i.title}</div>
+                          <div className="issue-meta">
+                            <Severity v={i.severity} />
+                            <Status v={i.status} fixedIn={i.fixed_in_build} />
+                          </div>
+                          <div className="issue-foot">
+                            <span className="mono">{i.build_version}</span> · {i.platform ?? '—'} · {fmtTime(i.created_at)}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    )
+                  })}
                 </div>
               )}
             </div>
