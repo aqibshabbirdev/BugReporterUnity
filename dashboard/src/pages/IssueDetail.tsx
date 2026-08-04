@@ -216,8 +216,8 @@ export default function IssueDetail() {
     api.issue(iid).then(d => {
       setIssue(d)
       setFixedIn(d.fixed_in_build ?? '')
-      // Don't clobber unsaved edits if a reload lands mid-typing. Empty description → show the template.
-      setNotes(prev => (notesDirty ? prev : (d.description || TEST_CASE_TEMPLATE)))
+      // Don't clobber unsaved edits if a reload lands mid-typing. Empty test case → show the template.
+      setNotes(prev => (notesDirty ? prev : (d.test_case || TEST_CASE_TEMPLATE)))
     }).catch(() => {})
   }
   useEffect(load, [iid])
@@ -319,6 +319,12 @@ export default function IssueDetail() {
       <div className="detail-grid">
         {/* Left: what a human writes + the logs to read against it — logs fill the space under the test case. */}
         <div className="col">
+          {issue.description && (
+            <div className="card pad tester-note">
+              <label>🗒 Tester's note</label>
+              <div style={{ whiteSpace: 'pre-wrap' }}>{issue.description}</div>
+            </div>
+          )}
           <div className="card pad">
             <label>Test case</label>
             <div className="muted small" style={{ marginBottom: 8 }}>

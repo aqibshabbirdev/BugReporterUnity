@@ -10,14 +10,13 @@ namespace BugReporter
     internal sealed class ReportOverlay : MonoBehaviour
     {
         private bool _formOpen;
-        private string _title = "";
-        private Severity _severity = Severity.Normal;
+        private string _note = "";      // the tester's optional note → travels as the report's description
         private bool _justSent;
         private float _sentAt;
         private GUIStyle _btn, _label, _field;
 
         // One-tap categories: the tester has no time to type mid-game, so tapping a tag files the report
-        // immediately with a sensible severity. Repro steps get written later on the dashboard.
+        // immediately with a sensible severity. The category is the title; the note (if any) is the description.
         private static readonly (string label, Severity sev)[] QuickTags =
         {
             ("💥 Crash",        Severity.Crash),
@@ -34,8 +33,8 @@ namespace BugReporter
             _formOpen = false;
             _justSent = true;
             _sentAt = Time.unscaledTime;
-            BugReporter.ReportFromOverlay(title, severity);   // Report() defaults an empty title itself
-            _title = "";
+            BugReporter.ReportFromOverlay(title, _note.Trim(), severity);   // the note becomes the description
+            _note = "";
         }
 
         public static void Create()
@@ -75,7 +74,7 @@ namespace BugReporter
                 if (GUI.Button(new Rect(12f, Screen.height * 0.18f, bw, bh), "🐞 Report", _btn))
                 {
                     _formOpen = true;
-                    _title = "";
+                    _note = "";
                 }
                 return;
             }
@@ -93,49 +92,31 @@ namespace BugReporter
             GUI.Box(box, GUIContent.none);
 
             GUILayout.BeginArea(new Rect(box.x + 16f, box.y + 16f, box.width - 32f, box.height - 32f));
-            GUILayout.Label("What happened? Tap one — no typing needed. Add the details later on the dashboard.", _label);
-            GUILayout.Space(8f);
 
-            // Fast path: one tap files the report with a matching severity.
-            float th = Screen.height * 0.08f;
+            // Note FIRST — whatever the tester types here rides along as the description on WHICHEVER category
+            // they then tap. (The old form threw the note away when a quick tag was tapped.)
+            GUILayout.Label("Note (optional) — what happened, in your words:", _label);
+            GUI.SetNextControlName("bugNote");
+            _note = GUILayout.TextField(_note, 300, _field, GUILayout.Height(Screen.height * 0.10f));
+
+            GUILayout.Space(12f);
+            GUILayout.Label("Tap a category to send:", _label);
+            float th = Screen.height * 0.09f;
             for (int i = 0; i < QuickTags.Length; i += 2)
             {
                 GUILayout.BeginHorizontal();
                 for (int j = i; j < i + 2 && j < QuickTags.Length; j++)
                     if (GUILayout.Button(QuickTags[j].label, _btn, GUILayout.Height(th)))
-                        SendReport(QuickTags[j].label, QuickTags[j].sev);
+                        SendReport(QuickTags[j].label, QuickTags[j].sev);   // title = category, description = note
                 GUILayout.EndHorizontal();
             }
 
-            GUILayout.Space(10f);
-            GUILayout.Label("or add a note (optional):", _label);
-            GUI.SetNextControlName("bugTitle");
-            _title = GUILayout.TextField(_title, 140, _field, GUILayout.Height(Screen.height * 0.07f));
-
-            GUILayout.Space(8f);
-            GUILayout.BeginHorizontal();
-            foreach (Severity s in new[] { Severity.Low, Severity.Normal, Severity.High, Severity.Crash })
-            {
-                bool on = _severity == s;
-                var style = new GUIStyle(_btn);
-                if (on) style.normal.textColor = Color.yellow;
-                if (GUILayout.Button(on ? $"● {s}" : s.ToString(), style, GUILayout.Height(Screen.height * 0.055f)))
-                    _severity = s;
-            }
-            GUILayout.EndHorizontal();
-
             GUILayout.FlexibleSpace();
-            GUILayout.BeginHorizontal();
             if (GUILayout.Button("Cancel", _btn, GUILayout.Height(Screen.height * 0.07f)))
             {
                 _formOpen = false;
-                _title = "";
+                _note = "";
             }
-            GUILayout.Space(12f);
-            // Title is optional now — Report() names an empty one "(no title)". Never blocks a report.
-            if (GUILayout.Button("Send", _btn, GUILayout.Height(Screen.height * 0.07f)))
-                SendReport(_title.Trim(), _severity);
-            GUILayout.EndHorizontal();
             GUILayout.EndArea();
         }
     }

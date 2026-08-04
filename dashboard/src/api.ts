@@ -47,7 +47,7 @@ export interface Sibling {
 }
 export interface IssueDetail extends IssueRow {
   project_id: string; side: string
-  description: string; device_model: string; os_version: string
+  description: string; test_case: string | null; device_model: string; os_version: string
   screen_resolution: string; memory_mb: number
   metadata: Record<string, unknown>
   has_screenshot: number; has_logs: number; updated_at: number

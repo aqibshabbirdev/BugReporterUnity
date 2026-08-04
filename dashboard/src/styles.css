@@ -238,6 +238,8 @@ label { font-size: 13px; color: var(--muted); display: block; margin-bottom: 4px
 .device-tab.row-normal { border-left-color: var(--accent); }
 .device-tab.row-low    { border-left-color: var(--faint); }
 .dt-dev { font-weight: 600; font-size: 13.5px; }
+.tester-note { border-left: 3px solid var(--accent); }
+.tester-note label { color: #79b8ff; }
 
 /* project cards */
 .proj-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }

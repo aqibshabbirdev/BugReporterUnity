@@ -137,6 +137,7 @@ _SCHEMA = [
         screen_resolution VARCHAR(20),
         memory_mb         INT,
         metadata          TEXT,
+        test_case         TEXT,
         has_screenshot    TINYINT NOT NULL DEFAULT 0,
         has_logs          TINYINT NOT NULL DEFAULT 0,
         has_clip          TINYINT NOT NULL DEFAULT 0,
@@ -196,6 +197,15 @@ def _migrate(conn):
     ).fetchone()["c"]
     if not has_clip:
         conn.execute("ALTER TABLE issues ADD COLUMN has_clip TINYINT NOT NULL DEFAULT 0 AFTER has_logs")
+
+    # issues.test_case — the dev-written repro on the dashboard, kept separate from the tester's in-game
+    # note (description) so editing the test case never clobbers what the tester originally reported.
+    has_tc = conn.execute(
+        """SELECT COUNT(*) c FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = 'issues' AND column_name = 'test_case'"""
+    ).fetchone()["c"]
+    if not has_tc:
+        conn.execute("ALTER TABLE issues ADD COLUMN test_case TEXT")
 
     # Status workflow rename: the original set (open / fixed_in_build / verified / wont_fix) described
     # what a DEV had done; the workflow the team actually runs is a queue — open → pending →

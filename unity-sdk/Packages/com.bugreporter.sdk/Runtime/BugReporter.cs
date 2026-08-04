@@ -152,6 +152,6 @@ namespace BugReporter
         }
 
         /// <summary>Internal: the overlay asks for this when the user submits.</summary>
-        internal static void ReportFromOverlay(string title, Severity severity) => Report(title, null, severity);
+        internal static void ReportFromOverlay(string title, string description, Severity severity) => Report(title, description, severity);
     }
 }
