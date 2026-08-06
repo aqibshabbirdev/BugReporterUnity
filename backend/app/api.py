@@ -202,6 +202,52 @@ def rotate_key(pid):
     return jsonify(apiKey=key)
 
 
+# ── export (API-key auth, for QA tooling / automation) ───────────────────────
+# Every dashboard read needs a browser session; this is the one read that takes the project's X-Api-Key
+# (the same key the game ships with) so a script/CI/test tool can pull issues and their test cases without
+# a login. It's scoped to that one project. Note: it makes the write key also readable — fine for an
+# internal tool; rotate the key if a build leaks.
+
+@bp.get("/api/export")
+def export_issues():
+    api_key = request.headers.get("X-Api-Key", "")
+    if not api_key.startswith("br_"):
+        return jsonify(error="missing or malformed X-Api-Key"), 401
+    with db.connect() as conn:
+        project = conn.execute(
+            "SELECT id, name FROM projects WHERE api_key_hash = ?", (db.hash_api_key(api_key),)
+        ).fetchone()
+    if project is None:
+        return jsonify(error="unknown api key"), 401
+
+    q = """SELECT id, title, description, test_case, severity, status, fixed_in_build,
+                  build_version, game, session, platform, device_model, os_version,
+                  has_screenshot, has_logs, has_clip, created_at, updated_at
+           FROM issues WHERE project_id = ?"""
+    params: list = [project["id"]]
+    if request.args.get("status"):
+        q += " AND status = ?"; params.append(request.args["status"])
+    if request.args.get("game"):
+        q += " AND game = ?"; params.append(request.args["game"])
+    if request.args.get("since"):
+        try:
+            params.append(int(request.args["since"])); q += " AND created_at >= ?"
+        except (TypeError, ValueError):
+            return jsonify(error="`since` must be a unix timestamp"), 400
+    if request.args.get("with_test_case"):
+        q += " AND test_case IS NOT NULL AND test_case <> ''"
+    q += " ORDER BY created_at DESC LIMIT 2000"
+
+    with db.connect() as conn:
+        rows = conn.execute(q, params).fetchall()
+    issues = []
+    for r in rows:
+        d = dict(r)
+        d["tester_note"] = d.pop("description", "") or ""   # clearer name in the export
+        issues.append(d)
+    return jsonify(project=project["name"], count=len(issues), issues=issues)
+
+
 # ── issues ──────────────────────────────────────────────────────────────────
 
 # The workflow the team actually runs, in order: a report lands in `open`, a dev moves it to

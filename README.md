@@ -194,6 +194,9 @@ Ingest (API-key auth via `X-Api-Key`):
 
 Dashboard (session cookie; scrypt-hashed passwords; invite-code registration):
 - `POST /api/auth/register` (needs `BR_INVITE_CODE`) / `login` / `logout`, `GET /api/auth/me`
+- `GET /api/export` — **API-key auth (X-Api-Key)**, not session. For QA tooling/CI: returns the project's
+  issues incl. `test_case` and `tester_note`. Filters: `?status=`, `?game=`, `?since=<unix>`, `?with_test_case=1`.
+  Example: `curl -H "X-Api-Key: br_live_…" https://bugreporterunity.wasmer.app/api/export?with_test_case=1`
 - `GET|POST /api/projects`, `POST /api/projects/<pid>/rotate-key`
 - `GET /api/projects/<pid>/issues` — filters: `?build=`, `?game=`, `?status=`
 - `GET /api/projects/<pid>/builds`, `GET /api/projects/<pid>/games` (games with issue/open counts, for the filter)
