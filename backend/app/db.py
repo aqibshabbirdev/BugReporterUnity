@@ -215,6 +215,17 @@ def _migrate(conn):
     conn.execute("UPDATE issues SET status = 'waiting_for_test' WHERE status = 'fixed_in_build'")
     conn.execute("UPDATE issues SET status = 'closed' WHERE status IN ('verified', 'wont_fix')")
 
+    # utf8mb4 everywhere. CREATE TABLE takes the database's default charset, and MariaDB on cPanel
+    # defaults to 3-byte utf8 — which rejects any 4-byte character (a tester's emoji in a title →
+    # error 1366 → the whole report 500s). MySQL 8 on Wasmer defaulted to utf8mb4, so this only
+    # surfaced after the move. Convert whatever isn't utf8mb4 yet; tables already on it match no rows.
+    for row in conn.execute(
+        """SELECT table_name AS t FROM information_schema.tables
+           WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
+             AND table_collation NOT LIKE 'utf8mb4%'"""
+    ).fetchall():
+        conn.execute(f"ALTER TABLE `{row['t']}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+
 
 def now() -> int:
     return int(time.time())

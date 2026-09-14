@@ -5,6 +5,7 @@ Config: env vars set in cPanel > Application Manager win; anything missing falls
 served over HTTP.
 """
 import faulthandler
+import logging
 import os
 import sys
 import time
@@ -56,6 +57,12 @@ _log.write("env keys: %s\n" % ",".join(sorted(k for k in os.environ if k.startsw
 _log.write("db target: host=%s port=%s name=%s user=%s\n" % tuple(
     os.environ.get(k) for k in ("DB_HOST", "DB_PORT", "DB_NAME", "DB_USERNAME")))
 _app = create_app()
+# Flask logs handled 500s (with traceback) through app.logger, which Passenger sends to Apache's
+# root-only error_log — mirror it into logs/app.log so a failing endpoint shows its traceback here.
+_handler = logging.StreamHandler(_log)
+_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_app.logger.addHandler(_handler)
+_app.logger.setLevel(logging.INFO)
 _log.write("create_app done in %.1fs, DB_INIT_ERROR=%s\n" % (time.time() - _t0, _app.config.get("DB_INIT_ERROR")))
 
 _REQ_KEYS = ("REQUEST_METHOD", "SCRIPT_NAME", "PATH_INFO", "REQUEST_URI", "QUERY_STRING",
