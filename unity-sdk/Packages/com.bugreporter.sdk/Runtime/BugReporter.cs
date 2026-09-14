@@ -76,7 +76,19 @@ namespace BugReporter
 
             if (config.ShowReportButton) ReportOverlay.Create();
 
-            Debug.Log($"[BugReporter] Ready — build {config.BuildVersion}, {config.LogBufferSize}-line log buffer.");
+            Debug.Log($"[BugReporter] Ready — build {config.BuildVersion}, {config.LogBufferSize}-line log buffer, " +
+                      $"endpoint {config.Endpoint}, key {MaskKey(config.ApiKey)}.");
+        }
+
+        /// <summary>
+        /// The API key as it should appear in logs: enough to tell which project / which rotation a build is
+        /// using (the usual "why 401?" question), not the whole key — device logs get pasted around.
+        /// </summary>
+        internal static string MaskKey(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "(none)";
+            return key.Length <= 16 ? key.Substring(0, Math.Min(8, key.Length)) + "…"
+                                    : key.Substring(0, 12) + "…" + key.Substring(key.Length - 4);
         }
 
         /// <summary>

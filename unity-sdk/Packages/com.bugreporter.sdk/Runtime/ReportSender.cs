@@ -103,18 +103,24 @@ namespace BugReporter
                 if (clip != null && clip.Length > 0)
                     form.Add(new MultipartFormFileSection("clip", clip, "clip.bin", "application/octet-stream"));
 
-                Debug.Log($"[BugReporter] Sending report — screenshot {(screenshot?.Length ?? 0) / 1024}KB, " +
+                // Where it goes and with which key, on every attempt — "which server / which key is this build
+                // actually using?" is the first question whenever reports don't show up on the dashboard.
+                string target = $"POST {BugReporter.Config.Endpoint} (key {BugReporter.MaskKey(BugReporter.Config.ApiKey)})";
+                Debug.Log($"[BugReporter] Sending report → {target} — screenshot {(screenshot?.Length ?? 0) / 1024}KB, " +
                           $"clip {(clip?.Length ?? 0) / 1024}KB, logs {(logs?.Length ?? 0) / 1024}KB (attempt {attempt}/{MaxRetries}).");
 
                 using (var req = UnityWebRequest.Post(BugReporter.Config.Endpoint, form))
                 {
                     req.SetRequestHeader("X-Api-Key", BugReporter.Config.ApiKey);
                     req.timeout = clip != null ? 120 : 30;   // a multi-MB clip won't clear 30s on mobile data
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
                     yield return req.SendWebRequest();
+                    long ms = clock.ElapsedMilliseconds;
+                    string response = Snippet(req.downloadHandler?.text);
 
                     if (req.result == UnityWebRequest.Result.Success)
                     {
-                        Debug.Log("[BugReporter] Report sent.");
+                        Debug.Log($"[BugReporter] Report sent — HTTP {req.responseCode} in {ms}ms: {response}");
                         yield break;
                     }
 
@@ -133,11 +139,13 @@ namespace BugReporter
                     bool clientError = req.responseCode >= 400 && req.responseCode < 500;
                     if (clientError)
                     {
-                        Debug.LogError($"[BugReporter] Report rejected ({req.responseCode}): {req.downloadHandler?.text}");
+                        Debug.LogError($"[BugReporter] Report rejected — HTTP {req.responseCode} in {ms}ms from {target}: {response}");
                         yield break;
                     }
 
-                    Debug.LogWarning($"[BugReporter] Send failed (attempt {attempt}/{MaxRetries}): {req.error}");
+                    // responseCode 0 = the request never got an HTTP answer (DNS, TLS, timeout, no network).
+                    Debug.LogWarning($"[BugReporter] Send failed (attempt {attempt}/{MaxRetries}) — HTTP {req.responseCode} in {ms}ms " +
+                                     $"from {target}: {req.error}. Response: {response}");
                 }
 
                 if (attempt < MaxRetries)
@@ -146,6 +154,14 @@ namespace BugReporter
 
             if (allowQueue && BugReporter.Config.QueueFailedReports)
                 QueueToDisk(json, logs, screenshot, thumbnail, clip);
+        }
+
+        /// <summary>A response body short enough for one console line (server errors can be whole HTML pages).</summary>
+        private static string Snippet(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "(empty)";
+            text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            return text.Length > 300 ? text.Substring(0, 300) + "…" : text;
         }
 
         // ── Offline queue ────────────────────────────────────────────────────────────────────────────
@@ -175,7 +191,11 @@ namespace BugReporter
         {
             if (!Directory.Exists(QueueDir)) yield break;
 
-            foreach (string dir in Directory.GetDirectories(QueueDir))
+            string[] queued = Directory.GetDirectories(QueueDir);
+            if (queued.Length > 0)
+                Debug.Log($"[BugReporter] Resending {queued.Length} queued report(s) from an earlier session (one try each, then dropped).");
+
+            foreach (string dir in queued)
             {
                 string jsonPath = Path.Combine(dir, "report.json");
                 if (!File.Exists(jsonPath)) { TryDelete(dir); continue; }   // partial write — nothing to send
