@@ -3,7 +3,8 @@
 In-game bug reporting for game teams. A tester presses a button; you get a ticket with the
 screenshot, the last log lines, the device, and the build it happened on — before anyone opens Jira.
 
-**Live deployment:** https://bugreporterunity.wasmer.app (Wasmer app `bugreporterunity`, owner `aqibshabbirdev`)
+**Live deployment:** https://pandabugsreporting.com (cPanel/Passenger on the GoDaddy WHM server — see §4)
+**Legacy deployment:** https://bugreporterunity.wasmer.app (Wasmer app `bugreporterunity`, owner `aqibshabbirdev`; still up with the old data, no longer the target — see §4b)
 **Repo:** https://github.com/aqibshabbirdev/BugReporterUnity
 
 > This README is the working documentation for the whole system — architecture, deploy, ops,
@@ -59,7 +60,7 @@ static void InitBugReporter()
     BugReporter.Init(new BugReporterConfig
     {
         ApiKey   = "br_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",   // per-project, from the dashboard
-        Endpoint = "https://bugreporterunity.wasmer.app/api/report",
+        Endpoint = "https://pandabugsreporting.com/api/report",
         Enabled  = true,          // gate on your own dev flag for release builds
         BuildVersion = Application.version,
         GameId   = "Hub",         // starting game; change it at runtime with SetGame (see below)
@@ -141,7 +142,45 @@ Runtime pieces (`unity-sdk/Packages/com.bugreporter.sdk/Runtime/`):
 with `Enabled = ConstantsData_M.MpVerboseLogs` (dev-only). Note the boot script must exist in the
 BUILD you hand testers — in-editor presence isn't enough for the Android build (rebuild after adding).
 
-## 4. Wasmer deployment
+## 4. cPanel deployment (current) — https://pandabugsreporting.com
+
+Moved off Wasmer on 2026-09-14 as a **fresh start** (no issues/uploads migrated). Runs on the GoDaddy
+WHM/cPanel server (AlmaLinux 10, `97.74.90.109`), cPanel account `pandabugsreporti`, as a **Passenger
+Python app** (EasyApache 4 `mod_passenger`, `/usr/bin/python3.12`).
+
+| Where | What |
+|---|---|
+| `/home/pandabugsreporti/bugreporter/` | app root — `passenger_wsgi.py` (this repo's root file), `requirements.txt`, `backend/` (app + built `static/`) |
+| `…/bugreporter/.env` | config: `DB_*`, `BR_INVITE_CODE`, `BR_DELETE_CODE` — mode 0600, **outside public_html** |
+| `…/bugreporter/tmp/restart.txt` | save/touch it to restart the app (Passenger convention) |
+| `…/bugreporter/logs/app.log` | the app's own log: boot lines + one line per request (path/status/timing). Apache's error_log is root-only, so this is what you have |
+| `/home/pandabugsreporti/bugreporter_data/uploads/` | `BR_UPLOAD_DIR` — screenshots / logs / clips |
+| `public_html/` | nothing app-related; Passenger answers `/` for the whole domain |
+| `/home/pandabugsreporti/old_deploy_aug29/` | the abandoned Aug-29 Docker attempt, moved out of `public_html` (it had been world-readable, `.env` included). Safe to delete |
+
+- Registered with cPanel UAPI `PassengerApps/register_application` (name `bugreporter`, path `bugreporter`,
+  domain `pandabugsreporting.com`, base URI `/`). The account's feature list does **not** expose
+  *Application Manager* in the cPanel menu, so config lives in `.env` — `passenger_wsgi.py` loads it at
+  boot; real environment variables (if ever set) still win.
+- Python deps go to the user's `~/.local/lib/python3.12/site-packages` via
+  `PassengerApps/ensure_deps?type=pip&app_path=bugreporter` (reads the app root `requirements.txt`).
+- MySQL: MariaDB 10.11 on `localhost`, database `pandabugsreporti_db`, user `pandabugsreporti_user`
+  (cPanel → Manage My Databases). The password exists only in `.env`. Schema is created on first boot.
+- **Deploying a change:** put the changed files under `…/bugreporter/` (File Manager, or UAPI
+  `Fileman/save_file_content`), then save `tmp/restart.txt`. Dashboard changes = `npm run build` →
+  upload `backend/static/`.
+
+### Gotchas that cost time here
+1. **`/api` proxy loop, server-wide.** WHM → Apache Configuration → Include Editor → *Pre Main Include*
+   still held `ProxyPass /api http://pandabugsreporting.com/api` from the Docker attempt — Apache
+   proxying to **itself**. Every `/api/*` request on *every* domain looped until 502; Apache then served
+   its `/502.shtml` error page *through Passenger*, which the SPA fallback answered with `index.html`
+   (so `/api/health` "returned the dashboard"), and the loop tied up workers until even TLS handshakes
+   stalled. Removed 2026-09-14. Keep that include empty unless you know exactly why.
+2. Passenger reads `.env` only at boot — after editing it, save `tmp/restart.txt`.
+3. First check `/api/health`, then `logs/app.log`.
+
+## 4b. Wasmer deployment (legacy)
 
 - **App:** `bugreporterunity`, owner `aqibshabbirdev`, python preset, auto-deploys from this GitHub
   repo's default branch. **Push to deploy.**
@@ -196,7 +235,7 @@ Dashboard (session cookie; scrypt-hashed passwords; invite-code registration):
 - `POST /api/auth/register` (needs `BR_INVITE_CODE`) / `login` / `logout`, `GET /api/auth/me`
 - `GET /api/export` — **API-key auth (X-Api-Key)**, not session. For QA tooling/CI: returns the project's
   issues incl. `test_case` and `tester_note`. Filters: `?status=`, `?game=`, `?since=<unix>`, `?with_test_case=1`.
-  Example: `curl -H "X-Api-Key: br_live_…" https://bugreporterunity.wasmer.app/api/export?with_test_case=1`
+  Example: `curl -H "X-Api-Key: br_live_…" https://pandabugsreporting.com/api/export?with_test_case=1`
 - `GET|POST /api/projects`, `POST /api/projects/<pid>/rotate-key`
 - `GET /api/projects/<pid>/issues` — filters: `?build=`, `?game=`, `?status=`
 - `GET /api/projects/<pid>/builds`, `GET /api/projects/<pid>/games` (games with issue/open counts, for the filter)
@@ -281,7 +320,16 @@ Dashboard access needs an account — registration requires the invite code (`BR
 | No Report button on device | SDK `Enabled` flag + the boot script actually in that BUILD |
 | Registration rejected | `BR_INVITE_CODE` env set and code matches |
 
-## 10. State as of 2026-07-27
+## 10. State
+
+**2026-09-14 — moved to cPanel (§4).** `https://pandabugsreporting.com` serves the dashboard + API from
+the GoDaddy WHM server; DB is a fresh MariaDB schema, so the first dashboard registration becomes admin
+and a new project/API key must be created. The GamesPanda client (`ApiAndRoomManager.cs`) needs the new
+`Endpoint` + that new key. Wasmer stays up untouched with the old data. Housekeeping still open: rotate
+the server root password (was shared in chat), stop the leftover Docker container on `:8000`, delete
+`~/old_deploy_aug29/` once nothing in it is needed, set a private `BR_DELETE_CODE`/`BR_INVITE_CODE` in `.env`.
+
+### As of 2026-07-27
 
 - Deployed and working end-to-end: SDK → ingest → MySQL → dashboard.
 - Integrated in the GamesPanda client (dev-gated); tested from Unity editor and Android.
