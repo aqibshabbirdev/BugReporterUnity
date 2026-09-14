@@ -155,6 +155,18 @@ _SCHEMA = [
         text       TEXT NOT NULL,
         created_at BIGINT NOT NULL
     )""",
+    # API tester (tester.py): Postman collections / environments, one JSON document per row.
+    """CREATE TABLE IF NOT EXISTS tester_docs (
+        id         VARCHAR(32) PRIMARY KEY,
+        kind       VARCHAR(20) NOT NULL,
+        name       VARCHAR(200) NOT NULL,
+        data       MEDIUMTEXT NOT NULL,
+        version    INT NOT NULL DEFAULT 1,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL,
+        updated_by VARCHAR(190) NOT NULL DEFAULT '',
+        KEY idx_tester_docs_kind (kind, name)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
 ]
 
 

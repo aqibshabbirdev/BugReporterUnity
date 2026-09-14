@@ -1,0 +1,660 @@
+/* API tester — shell: state, sign-in, top bar, collection tree, request editor.
+ * panels.js adds sending, the response pane, dialogs and import/export on the same `T` namespace.
+ */
+(function () {
+  'use strict';
+
+  const T = {};
+  window.T = T;
+
+  /* ── tiny DOM + storage helpers ────────────────────────────────────────── */
+
+  /** h('button.primary', {onclick, title}, 'Send') — class shorthand after the tag, children as text/nodes. */
+  const h = (T.h = function (sel, props, ...kids) {
+    const [tag, ...classes] = sel.split('.');
+    const el = document.createElement(tag || 'div');
+    if (classes.length) el.className = classes.join(' ');
+    for (const [k, v] of Object.entries(props || {})) {
+      if (v === undefined || v === null || v === false) continue;
+      if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (k === 'class') el.className += (el.className ? ' ' : '') + v;
+      else if (k === 'text') el.textContent = v;
+      else if (k === 'value') el.value = v;
+      else if (k === 'checked') el.checked = !!v;
+      else if (k === 'style') el.style.cssText = v;
+      else el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of kids.flat()) if (kid !== null && kid !== undefined && kid !== false) el.append(kid.nodeType ? kid : String(kid));
+    return el;
+  });
+
+  const ls = (T.ls = {
+    get: (k, d) => { try { const v = localStorage.getItem('apitester.' + k); return v === null ? d : v; } catch (e) { return d; } },
+    set: (k, v) => { try { localStorage.setItem('apitester.' + k, v); } catch (e) { /* private mode */ } }
+  });
+
+  T.toast = function (msg, kind) {
+    const el = h('div.toast', { class: kind || '', text: msg });
+    document.getElementById('toasts').append(el);
+    setTimeout(() => el.remove(), kind === 'error' ? 7000 : 2600);
+  };
+
+  /* ── API ───────────────────────────────────────────────────────────────── */
+
+  T.api = async function (method, path, body) {
+    const r = await fetch(path, {
+      method, credentials: 'same-origin',
+      headers: body === undefined ? { 'X-Tester': '1' } : { 'Content-Type': 'application/json', 'X-Tester': '1' },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+    let data = null;
+    try { data = await r.json(); } catch (e) { /* non-JSON error page */ }
+    if (!r.ok) {
+      const err = new Error((data && data.error) || `HTTP ${r.status}`);
+      err.status = r.status; err.data = data;
+      throw err;
+    }
+    return data;
+  };
+
+  /* ── state ─────────────────────────────────────────────────────────────── */
+
+  const S = (T.S = {
+    me: null,
+    colls: [], envs: [],
+    coll: null,            // {id, name, version, data}
+    env: null,             // {id, name, version, data}
+    sel: null,             // the selected item object inside coll.data
+    open: new Set(),       // expanded folder objects
+    dirty: false, envDirty: false,
+    filter: '',
+    tab: 'params',
+    mode: ls.get('mode', 'server'),
+    verifyTls: ls.get('verifyTls', '1') === '1',
+    local: [],             // pm.variables for this page session
+    results: new WeakMap() // item -> last {res | error, scripts}
+  });
+
+  T.markDirty = function () {
+    if (!S.dirty) { S.dirty = true; T.renderSaveState(); }
+  };
+
+  T.envStore = () => M.varStore(() => (S.env ? S.env.data.values : S.local), () => { if (S.env) S.envDirty = true; });
+  T.collStore = () => M.varStore(() => (S.coll.data.variable = S.coll.data.variable || []), T.markDirty);
+  T.localStore = () => M.varStore(() => S.local);
+  T.scopes = () => [T.localStore(), T.envStore(), T.collStore()];
+
+  window.addEventListener('beforeunload', (e) => {
+    if (S.dirty) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  /* ── boot + sign-in ────────────────────────────────────────────────────── */
+
+  T.boot = async function () {
+    try {
+      S.me = await T.api('GET', '/api/auth/me');
+    } catch (e) {
+      if (e.status === 401) return renderGate();
+      document.getElementById('app').replaceChildren(h('div.boot', { text: 'Could not reach the server: ' + e.message }));
+      return;
+    }
+    [S.colls, S.envs] = await Promise.all([T.api('GET', '/api/tester/collections'), T.api('GET', '/api/tester/environments')]);
+    renderShell();
+    const envId = ls.get('env', '');
+    if (S.envs.some((x) => x.id === envId)) await T.openEnv(envId);
+    const collId = ls.get('coll', '');
+    const first = S.colls.find((x) => x.id === collId) || S.colls[0];
+    if (first) await T.openColl(first.id); else T.renderAll();
+  };
+
+  function renderGate(error) {
+    const email = h('input', { type: 'email', required: true, autocomplete: 'username' });
+    const pw = h('input', { type: 'password', required: true, autocomplete: 'current-password' });
+    const msg = h('div.error-box', { style: error ? '' : 'display:none', text: error || '' });
+    const form = h('form', {
+      onsubmit: async (ev) => {
+        ev.preventDefault();
+        try {
+          await T.api('POST', '/api/auth/login', { email: email.value, password: pw.value });
+          T.boot();
+        } catch (e) { msg.textContent = e.message; msg.style.display = ''; }
+      }
+    },
+      h('h1', { text: 'API Tester' }),
+      h('p.muted', { text: 'Sign in with your Bug Reporter account.' }),
+      h('div.field', {}, h('label', { text: 'Email' }), email),
+      h('div.field', {}, h('label', { text: 'Password' }), pw),
+      msg,
+      h('div.inline', { style: 'justify-content:space-between;margin-top:12px' },
+        h('a', { href: '/', text: 'No account? Open the dashboard' }),
+        h('button.primary', { type: 'submit', text: 'Sign in' }))
+    );
+    document.getElementById('app').replaceChildren(h('div.gate', {}, form));
+    email.focus();
+  }
+
+  /* ── shell ─────────────────────────────────────────────────────────────── */
+
+  const R = (T.R = {});   // live region elements
+
+  function renderShell() {
+    R.top = h('header.top');
+    R.tree = h('div.tree');
+    R.filter = h('input', {
+      type: 'search', placeholder: 'Filter requests', value: S.filter,
+      oninput: () => { S.filter = R.filter.value.trim().toLowerCase(); T.renderTree(); }
+    });
+    R.side = h('aside.side', {},
+      h('div.side-tools', {}, R.filter,
+        h('button', { title: 'New request', text: '+ Request', onclick: () => T.addItem(M.newRequest(), T.targetFolder()) }),
+        h('button', { title: 'New folder', text: '+ Folder', onclick: () => T.addItem(M.newFolder(), T.targetFolder()) })),
+      R.tree);
+    R.editor = h('section.editor');
+    R.response = h('section.response');
+    document.getElementById('app').replaceChildren(R.top, h('div.main', {}, R.side, h('div.work', {}, R.editor, R.response)));
+  }
+
+  T.renderAll = function () {
+    T.renderTop(); T.renderTree(); T.renderEditor(); T.renderResponse();
+  };
+
+  T.renderSaveState = function () {
+    if (!R.saved) return;
+    R.saved.className = 'saved' + (S.dirty ? ' dirty' : '');
+    R.saved.textContent = !S.coll ? '' : S.dirty ? '● Unsaved' : 'Saved';
+    if (R.saveBtn) R.saveBtn.disabled = !S.dirty;
+  };
+
+  T.renderTop = function () {
+    const collSel = h('select', {
+      title: 'Collection',
+      onchange: async () => {
+        if (S.dirty && !confirm('Discard unsaved changes to this collection?')) { collSel.value = S.coll.id; return; }
+        await T.openColl(collSel.value);
+      }
+    }, S.colls.length ? S.colls.map((c) => h('option', { value: c.id, text: c.name, selected: S.coll && c.id === S.coll.id })) : h('option', { text: 'No collections yet' }));
+
+    const envSel = h('select', {
+      title: 'Environment',
+      onchange: async () => { await T.openEnv(envSel.value); T.renderEditor(); }
+    }, h('option', { value: '', text: 'No environment' }), S.envs.map((e) => h('option', { value: e.id, text: e.name, selected: S.env && e.id === S.env.id })));
+
+    R.saved = h('span.saved');
+    R.saveBtn = h('button.primary', { text: 'Save', title: 'Save collection (Ctrl/Cmd+S)', onclick: () => T.saveColl() });
+
+    // Grouped so a narrow window wraps whole groups instead of splitting "Unsaved" from its Save button.
+    R.top.replaceChildren(
+      h('div.group', {},
+        h('span.brand', { text: '🐞 API Tester' }),
+        collSel,
+        h('button', { text: 'Import', title: 'Import a Postman collection or environment (.json)', onclick: () => T.importFile() }),
+        h('button.ghost', { text: '⋯', title: 'Collection actions', onclick: (ev) => T.collMenu(ev.currentTarget) })),
+      h('div.group', {}, envSel, h('button', { text: 'Variables', onclick: () => T.envDialog() })),
+      h('span.grow'),
+      h('div.group', {}, R.saved, R.saveBtn, h('span.faint.who', { text: S.me.email }), h('a', { href: '/', text: 'Dashboard' }))
+    );
+    T.renderSaveState();
+  };
+
+  /* ── documents ─────────────────────────────────────────────────────────── */
+
+  T.openColl = async function (id) {
+    const doc = await T.api('GET', '/api/tester/collections/' + id);
+    S.coll = doc; S.dirty = false; S.sel = null; S.open = new Set();
+    ls.set('coll', id);
+    // Open the first folder and select its first request, so the page never starts blank.
+    const firstFolder = doc.data.item.find(M.isFolder);
+    if (firstFolder) S.open.add(firstFolder);
+    let firstReq = null;
+    M.walk(doc.data.item, (it) => { if (!firstReq && !M.isFolder(it)) firstReq = it; });
+    S.sel = firstReq;
+    if (firstReq) (M.parentsOf(doc.data.item, firstReq) || []).forEach((p) => S.open.add(p));
+    T.renderAll();
+  };
+
+  T.openEnv = async function (id) {
+    if (S.envDirty && S.env) await T.saveEnv(true);
+    S.env = id ? await T.api('GET', '/api/tester/environments/' + id) : null;
+    S.envDirty = false;
+    ls.set('env', id || '');
+    T.renderTop();
+  };
+
+  T.saveColl = async function () {
+    if (!S.coll || !S.dirty) return;
+    try {
+      const r = await T.api('PUT', '/api/tester/collections/' + S.coll.id, { data: S.coll.data, version: S.coll.version });
+      S.coll.version = r.version; S.coll.name = r.name; S.dirty = false;
+      const entry = S.colls.find((c) => c.id === r.id); if (entry) Object.assign(entry, r);
+      T.renderTop();
+      T.toast('Collection saved');
+    } catch (e) {
+      if (e.status === 409) T.conflictDialog(e.data); else T.toast('Save failed: ' + e.message, 'error');
+    }
+  };
+
+  T.saveEnv = async function (quiet) {
+    if (!S.env || !S.envDirty) return;
+    try {
+      const r = await T.api('PUT', '/api/tester/environments/' + S.env.id, { data: S.env.data, version: S.env.version });
+      S.env.version = r.version; S.envDirty = false;
+      if (!quiet) T.toast('Environment saved');
+    } catch (e) {
+      if (e.status === 409) {
+        T.toast(`${e.data.updatedBy} changed "${S.env.name}" meanwhile — reloaded it; re-apply your change.`, 'error');
+        S.env = await T.api('GET', '/api/tester/environments/' + S.env.id); S.envDirty = false;
+      } else T.toast('Environment save failed: ' + e.message, 'error');
+    }
+  };
+
+  /* ── tree ──────────────────────────────────────────────────────────────── */
+
+  /** Folder that "+ Request" / "+ Folder" add into: the selected folder, or the selected request's folder. */
+  T.targetFolder = function () {
+    if (!S.coll || !S.sel) return null;
+    if (M.isFolder(S.sel)) return S.sel;
+    const parents = M.parentsOf(S.coll.data.item, S.sel) || [];
+    return parents[parents.length - 1] || null;
+  };
+
+  T.addItem = function (item, folder) {
+    if (!S.coll) return T.toast('Create or import a collection first', 'error');
+    const name = prompt(M.isFolder(item) ? 'Folder name' : 'Request name', item.name);
+    if (name === null) return;
+    item.name = name.trim() || item.name;
+    (folder ? folder.item : S.coll.data.item).push(item);
+    if (folder) S.open.add(folder);
+    S.sel = item; S.tab = 'params';
+    T.markDirty(); T.renderTree(); T.renderEditor(); T.renderResponse();
+  };
+
+  const matches = (it) => {
+    if (!S.filter) return true;
+    if (M.isFolder(it)) return it.name.toLowerCase().includes(S.filter) || it.item.some(matches);
+    return it.name.toLowerCase().includes(S.filter) || M.urlRaw(M.req(it)).toLowerCase().includes(S.filter);
+  };
+
+  function highlight(text) {
+    if (!S.filter) return text;
+    const i = text.toLowerCase().indexOf(S.filter);
+    if (i < 0) return text;
+    return [text.slice(0, i), h('mark', { text: text.slice(i, i + S.filter.length) }), text.slice(i + S.filter.length)];
+  }
+
+  T.renderTree = function () {
+    if (!R.tree) return;
+    if (!S.coll) {
+      R.tree.replaceChildren(h('div.empty-tree', {},
+        h('p', { text: 'No collection open.' }),
+        h('button.primary', { text: 'Import Postman collection', onclick: () => T.importFile() }),
+        h('p', {}, h('a', { href: '#', text: 'or start an empty one', onclick: (e) => { e.preventDefault(); T.newCollection(); } }))));
+      return;
+    }
+    const frag = document.createDocumentFragment();
+    const draw = (items, depth) => {
+      for (const it of items) {
+        if (!matches(it)) continue;
+        const pad = `padding-left:${8 + depth * 14}px`;
+        const more = h('button.ghost.more', { text: '⋯', title: 'Actions', onclick: (ev) => { ev.stopPropagation(); T.itemMenu(ev.currentTarget, it); } });
+        if (M.isFolder(it)) {
+          const open = S.open.has(it) || !!S.filter;
+          frag.append(h('div.row', {
+            class: S.sel === it ? 'sel' : '', style: pad,
+            onclick: () => { if (S.open.has(it) && S.sel === it) S.open.delete(it); else S.open.add(it); S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
+          }, h('span.caret', { text: open ? '▾' : '▸' }), h('span.label', {}, highlight(it.name)), h('span.count', { text: M.countRequests(it.item) }), more));
+          if (open) draw(it.item, depth + 1);
+        } else {
+          const method = (M.req(it).method || 'GET').toUpperCase();
+          frag.append(h('div.row', {
+            class: S.sel === it ? 'sel' : '', style: pad, title: M.urlRaw(M.req(it)),
+            onclick: () => { S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
+          }, h('span.meth', { class: 'm-' + method, text: method.slice(0, 6) }), h('span.label', {}, highlight(it.name)), more));
+        }
+      }
+    };
+    draw(S.coll.data.item, 0);
+    if (!frag.childNodes.length) frag.append(h('div.empty-tree', { text: S.filter ? 'Nothing matches.' : 'Empty collection — add a request.' }));
+    R.tree.replaceChildren(frag);
+  };
+
+  /* ── menus ─────────────────────────────────────────────────────────────── */
+
+  T.menu = function (anchor, entries) {
+    document.querySelectorAll('.menu').forEach((m) => m.remove());
+    const menu = h('div.menu', {}, entries.map((e) => (e === '-' ? h('hr') : h('button', { class: e.danger ? 'danger' : '', text: e.label, onclick: () => { menu.remove(); e.run(); } }))));
+    document.body.append(menu);
+    const r = anchor.getBoundingClientRect();
+    const w = menu.offsetWidth, hgt = menu.offsetHeight;
+    menu.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + 'px';
+    menu.style.top = (r.bottom + hgt + 8 > innerHeight ? Math.max(8, r.top - hgt - 4) : r.bottom + 4) + 'px';
+    const close = (ev) => { if (!menu.contains(ev.target)) { menu.remove(); document.removeEventListener('mousedown', close); } };
+    setTimeout(() => document.addEventListener('mousedown', close), 0);
+  };
+
+  T.itemMenu = function (anchor, it) {
+    const entries = [];
+    if (M.isFolder(it)) {
+      entries.push({ label: 'New request here', run: () => T.addItem(M.newRequest(), it) });
+      entries.push({ label: 'New folder here', run: () => T.addItem(M.newFolder(), it) });
+      entries.push('-');
+    }
+    entries.push({ label: 'Rename', run: () => { const n = prompt('Name', it.name); if (n && n.trim()) { it.name = n.trim(); T.markDirty(); T.renderTree(); T.renderEditor(); } } });
+    entries.push({
+      label: 'Duplicate', run: () => {
+        const list = M.containerOf(S.coll.data, it); const copy = M.clone(it);
+        copy.name = it.name + ' copy'; list.splice(list.indexOf(it) + 1, 0, copy);
+        S.sel = copy; T.markDirty(); T.renderTree(); T.renderEditor(); T.renderResponse();
+      }
+    });
+    entries.push({ label: 'Move up', run: () => move(it, -1) }, { label: 'Move down', run: () => move(it, 1) });
+    entries.push('-');
+    entries.push({
+      label: 'Delete', danger: true, run: () => {
+        const what = M.isFolder(it) ? `folder "${it.name}" and its ${M.countRequests(it.item)} requests` : `"${it.name}"`;
+        if (!confirm(`Delete ${what}? (Only takes effect when you Save.)`)) return;
+        const list = M.containerOf(S.coll.data, it); list.splice(list.indexOf(it), 1);
+        if (S.sel === it || (M.isFolder(it) && S.sel && (M.parentsOf(it.item, S.sel) || it.item.includes(S.sel)))) S.sel = null;
+        T.markDirty(); T.renderTree(); T.renderEditor(); T.renderResponse();
+      }
+    });
+    T.menu(anchor, entries);
+  };
+
+  function move(it, delta) {
+    const list = M.containerOf(S.coll.data, it); const i = list.indexOf(it); const j = i + delta;
+    if (j < 0 || j >= list.length) return;
+    list.splice(i, 1); list.splice(j, 0, it);
+    T.markDirty(); T.renderTree();
+  }
+
+  /* ── key/value table ───────────────────────────────────────────────────── */
+
+  /**
+   * Editable rows over a Postman list ([{key, value, disabled}] or [{key, value, enabled}]). Edits write
+   * straight into the list objects; a blank trailing row becomes real once typed into.
+   */
+  T.kvTable = function (list, { flag = 'disabled', onChange, keyHint = 'Key', valueHint = 'Value', canToggle = true } = {}) {
+    const table = h('table.kv');
+    const isOff = (row) => (flag === 'enabled' ? row.enabled === false : !!row.disabled);
+    const setOff = (row, off) => { if (flag === 'enabled') row.enabled = !off; else if (off) row.disabled = true; else delete row.disabled; };
+
+    const addRow = (row, blank) => {
+      const tr = h('tr', { class: !blank && isOff(row) ? 'off' : '' });
+      const chk = h('input', { type: 'checkbox', checked: blank || !isOff(row), title: 'Enabled', onchange: () => { setOff(row, !chk.checked); tr.className = chk.checked ? '' : 'off'; onChange(); } });
+      const key = h('input', { type: 'text', placeholder: keyHint, value: row.key || '' });
+      const val = h('input', { type: 'text', placeholder: valueHint, value: row.value == null ? '' : String(row.value) });
+      const del = h('button.ghost.x', { text: '×', title: 'Remove', onclick: () => { const i = list.indexOf(row); if (i >= 0) list.splice(i, 1); tr.remove(); onChange(); } });
+      const input = () => {
+        row.key = key.value; row.value = val.value;
+        if (blank) { blank = false; list.push(row); chk.disabled = false; addRow({ key: '', value: '' }, true); }
+        onChange();
+      };
+      key.addEventListener('input', input); val.addEventListener('input', input);
+      if (blank) chk.disabled = true;
+      tr.append(h('td.chk', {}, canToggle ? chk : ''), h('td', {}, key), h('td', {}, val), h('td.del', {}, del));
+      table.append(tr);
+    };
+    list.forEach((row) => addRow(row, false));
+    addRow({ key: '', value: '' }, true);
+    return table;
+  };
+
+  /* ── editor ────────────────────────────────────────────────────────────── */
+
+  T.renderEditor = function () {
+    const it = S.sel;
+    if (!S.coll || !it) {
+      R.editor.replaceChildren(h('div.idle', { style: 'padding:40px 0' },
+        S.coll ? 'Pick a request on the left, or add one.' : 'Import your Postman collection to get started.'));
+      return;
+    }
+    const parents = M.parentsOf(S.coll.data.item, it) || [];
+    const name = h('input.ed-name', { value: it.name, oninput: () => { it.name = name.value; T.markDirty(); T.renderTree(); } });
+    const crumbs = h('span.crumbs', { text: parents.map((p) => p.name).join(' › ') });
+    if (M.isFolder(it)) return renderFolderEditor(it, parents, name, crumbs);
+
+    const req = M.req(it);
+    const method = h('select', {
+      class: 'm-' + (req.method || 'GET').toUpperCase(),
+      onchange: () => { req.method = method.value; method.className = 'm-' + method.value; T.markDirty(); T.renderTree(); }
+    }, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'].map((m) => h('option', { value: m, text: m, selected: (req.method || 'GET').toUpperCase() === m })));
+
+    const url = h('input.url', {
+      value: M.urlRaw(req), placeholder: '{{BaseUrl}}path/to/endpoint', spellcheck: 'false',
+      oninput: () => { M.setUrl(req, url.value); T.markDirty(); renderVarWarning(); if (S.tab === 'params') renderTab(); updateTabCounts(); },
+      onkeydown: (ev) => { if (ev.key === 'Enter') T.send(); }
+    });
+    R.url = url;
+    const sendBtn = h('button.primary', { text: 'Send', title: 'Send (Ctrl/Cmd+Enter)', onclick: () => T.send() });
+    R.sendBtn = sendBtn;
+
+    const mode = h('select', {
+      title: 'Where the request is sent from', style: 'padding:2px 6px;font-size:12px',
+      onchange: () => { S.mode = mode.value; ls.set('mode', S.mode); tls.style.display = S.mode === 'server' ? '' : 'none'; }
+    }, h('option', { value: 'server', text: 'Send via server', selected: S.mode === 'server' }), h('option', { value: 'browser', text: 'Send from my browser', selected: S.mode === 'browser' }));
+    const tlsBox = h('input', { type: 'checkbox', checked: S.verifyTls, onchange: () => { S.verifyTls = tlsBox.checked; ls.set('verifyTls', S.verifyTls ? '1' : '0'); } });
+    const tls = h('label', { style: S.mode === 'server' ? '' : 'display:none', title: 'Untick for self-signed certificates' }, tlsBox, 'Verify TLS');
+    R.varWarn = h('span.warn');
+
+    R.tabs = h('div.tabs');
+    R.tabBody = h('div');
+    R.editor.replaceChildren(
+      h('div.ed-head', {}, name, crumbs),
+      h('div.ed-bar', {}, method, url, sendBtn),
+      h('div.ed-sub', {}, mode, tls, R.varWarn),
+      R.tabs, R.tabBody
+    );
+    renderVarWarning();
+    renderTabs();
+    renderTab();
+  };
+
+  function renderFolderEditor(it, parents, name, crumbs) {
+    R.tabs = h('div.tabs'); R.tabBody = h('div');
+    if (!['auth', 'scripts'].includes(S.tab)) S.tab = 'auth';
+    R.editor.replaceChildren(
+      h('div.ed-head', {}, h('span', { text: '📁' }), name, crumbs),
+      h('p.hint', { text: `${M.countRequests(it.item)} requests. Auth and scripts set here apply to every request inside that doesn't set its own.` }),
+      h('div.inline', {},
+        h('button', { text: '+ Request here', onclick: () => T.addItem(M.newRequest(), it) }),
+        h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) })),
+      R.tabs, R.tabBody
+    );
+    renderTabs(); renderTab();
+  }
+
+  function renderVarWarning() {
+    if (!R.varWarn || !S.sel || M.isFolder(S.sel)) return;
+    const req = M.req(S.sel);
+    const used = new Set([...M.varsIn(M.urlRaw(req)), ...(req.header || []).filter((x) => !x.disabled).flatMap((x) => M.varsIn(x.key + x.value))]);
+    const auth = M.effectiveAuth(S.sel, M.parentsOf(S.coll.data.item, S.sel) || [], S.coll.data).auth;
+    if (auth && auth.type === 'bearer') M.varsIn(M.bearerToken(auth)).forEach((v) => used.add(v));
+    const scopes = T.scopes();
+    const missing = [...used].filter((k) => !scopes.some((s) => s.has(k)));
+    R.varWarn.replaceChildren();
+    if (!missing.length) return;
+    R.varWarn.append(`Not defined: ${missing.map((k) => '{{' + k + '}}').join(', ')}`,
+      h('button', { text: S.env ? 'Set values' : 'Create environment', onclick: () => T.envDialog(missing) }));
+  }
+  T.renderVarWarning = renderVarWarning;
+
+  const TABS = {
+    params: { label: 'Params', count: (req) => M.query(req).length + M.pathVars(req).length },
+    headers: { label: 'Headers', count: (req) => (req.header || []).length },
+    auth: { label: 'Auth' },
+    body: { label: 'Body', count: (req) => (req.body && req.body.mode && (req.body.raw || (req.body[req.body.mode] || []).length) ? '●' : '') },
+    scripts: { label: 'Scripts', count: (req, it) => ((it.event || []).filter((e) => M.script(it, e.listen).trim()).length || '') }
+  };
+
+  function renderTabs() {
+    const it = S.sel;
+    const names = M.isFolder(it) ? ['auth', 'scripts'] : Object.keys(TABS);
+    if (!names.includes(S.tab)) S.tab = names[0];
+    R.tabs.replaceChildren(...names.map((key) => {
+      const t = TABS[key];
+      const n = !M.isFolder(it) && t.count ? t.count(M.req(it), it) : '';
+      return h('button.tab', { class: S.tab === key ? 'on' : '', 'data-tab': key, onclick: () => { S.tab = key; renderTabs(); renderTab(); } },
+        t.label, n ? h('span.n', { text: n }) : '');
+    }));
+  }
+
+  function updateTabCounts() { renderTabs(); }
+
+  function renderTab() {
+    const it = S.sel;
+    const req = M.isFolder(it) ? null : M.req(it);
+    const changed = () => { T.markDirty(); updateTabCounts(); renderVarWarning(); };
+    let body;
+    if (S.tab === 'params') {
+      const q = M.query(req).map((x) => ({ key: x.key, value: x.value, disabled: x.disabled }));
+      body = h('div', {},
+        h('div.section-title', { text: 'Query parameters' }),
+        T.kvTable(q, { onChange: () => { M.setQuery(req, q); R.url.value = M.urlRaw(req); changed(); } }));
+      const vars = M.pathVars(req);
+      if (vars.length) {
+        body.append(h('div.section-title', { text: 'Path variables' }),
+          T.kvTable(vars, { canToggle: false, onChange: changed, keyHint: 'name' }),
+          h('p.hint', { text: 'From :name segments in the URL.' }));
+      }
+    } else if (S.tab === 'headers') {
+      req.header = req.header || [];
+      body = h('div', {}, T.kvTable(req.header, { onChange: () => { req.header.forEach((x) => { if (!x.type) x.type = 'text'; }); changed(); } }));
+    } else if (S.tab === 'auth') {
+      body = renderAuth(it, changed);
+    } else if (S.tab === 'body') {
+      body = renderBody(req, changed);
+    } else {
+      body = renderScripts(it, changed);
+    }
+    R.tabBody.replaceChildren(body);
+  }
+
+  function renderAuth(it, changed) {
+    const target = M.isFolder(it) ? it : M.req(it);
+    const parents = M.parentsOf(S.coll.data.item, it) || [];
+    const wrap = h('div');
+    const draw = () => {
+      const type = target.auth ? (target.auth.type === 'noauth' ? 'noauth' : target.auth.type === 'bearer' ? 'bearer' : 'other') : 'inherit';
+      const sel = h('select', {
+        onchange: () => {
+          if (sel.value === 'inherit') delete target.auth;
+          else if (sel.value === 'noauth') target.auth = { type: 'noauth' };
+          else if (sel.value === 'bearer') target.auth = { type: 'bearer', bearer: [{ key: 'token', value: M.bearerToken(target.auth) || '{{token}}', type: 'string' }] };
+          changed(); draw();
+        }
+      }, [['inherit', 'Inherit from parent'], ['noauth', 'No auth'], ['bearer', 'Bearer token']].concat(type === 'other' ? [['other', target.auth.type + ' (kept as is)']] : [])
+        .map(([v, l]) => h('option', { value: v, text: l, selected: v === type })));
+      const rows = [h('div.field', {}, h('label', { text: 'Type' }), sel)];
+      if (type === 'bearer') {
+        const entry = target.auth.bearer.find((x) => x.key === 'token') || (target.auth.bearer.push({ key: 'token', value: '', type: 'string' }), target.auth.bearer[target.auth.bearer.length - 1]);
+        const token = h('textarea', { rows: 3, spellcheck: 'false', value: entry.value || '', oninput: () => { entry.value = token.value; changed(); } });
+        rows.push(h('div.field', {}, h('label', { text: 'Token' }), token), h('p.hint', { text: 'Tip: use {{token}} and let the login request\'s script set it: pm.environment.set("token", pm.response.json().access_token)' }));
+      } else if (type === 'inherit') {
+        const inherited = M.isFolder(it)
+          ? (parents.slice().reverse().find((p) => p.auth) || (S.coll.data.auth ? { name: 'collection', auth: S.coll.data.auth } : null))
+          : null;
+        const eff = M.isFolder(it) ? (inherited ? { auth: inherited.auth, from: inherited.name } : { auth: null }) : M.effectiveAuth(it, parents, S.coll.data);
+        rows.push(h('p.hint', { text: eff.auth ? `Uses ${eff.auth.type} auth from "${eff.from}".` : 'No auth is set above this, so none is sent.' }));
+      } else if (type === 'other') {
+        rows.push(h('p.hint', { text: `This ${target.auth.type} auth isn't editable here; it's kept unchanged and not applied when sending.` }));
+      }
+      wrap.replaceChildren(...rows);
+    };
+    draw();
+    return wrap;
+  }
+
+  function renderBody(req, changed) {
+    const wrap = h('div');
+    const draw = () => {
+      const b = req.body;
+      const mode = b && b.mode ? b.mode : 'none';
+      const pick = h('select', {
+        onchange: () => {
+          const m = pick.value;
+          if (m === 'none') delete req.body;
+          else {
+            req.body = req.body || {};
+            req.body.mode = m;
+            if (m === 'raw') { req.body.raw = req.body.raw || ''; req.body.options = req.body.options || { raw: { language: 'json' } }; }
+            else req.body[m] = req.body[m] || [];
+          }
+          changed(); draw();
+        }
+      }, [['none', 'None'], ['raw', 'Raw'], ['urlencoded', 'x-www-form-urlencoded'], ['formdata', 'form-data']].map(([v, l]) => h('option', { value: v, text: l, selected: v === mode })));
+      const head = h('div.inline', { style: 'margin-bottom:8px' }, pick);
+      const parts = [head];
+      if (mode === 'raw') {
+        b.options = b.options || { raw: { language: 'json' } };
+        b.options.raw = b.options.raw || { language: 'json' };
+        const lang = h('select', { onchange: () => { b.options.raw.language = lang.value; changed(); } },
+          [['json', 'JSON'], ['text', 'Text'], ['xml', 'XML']].map(([v, l]) => h('option', { value: v, text: l, selected: (b.options.raw.language || 'json') === v })));
+        const area = h('textarea', { rows: 12, spellcheck: 'false', value: b.raw || '', style: 'width:100%', oninput: () => { b.raw = area.value; changed(); } });
+        area.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Tab') { ev.preventDefault(); const s = area.selectionStart; area.setRangeText('  ', s, area.selectionEnd, 'end'); b.raw = area.value; changed(); }
+        });
+        const pretty = h('button', {
+          text: 'Beautify', onclick: () => {
+            // {{vars}} may sit unquoted where a number goes ("id": {{userId}}) — park them as unique
+            // strings, format, then put them back exactly as they were.
+            const parked = [];
+            const src = parkBareVars(area.value, parked);
+            try {
+              const out = JSON.stringify(JSON.parse(src), null, 2).replace(/"@@tester-var-(\d+)@@"/g, (m, i) => parked[+i]);
+              area.value = out; b.raw = out; changed();
+            } catch (e) { T.toast('Not valid JSON: ' + e.message, 'error'); }
+          }
+        });
+        head.append(lang, pretty);
+        parts.push(area);
+      } else if (mode === 'urlencoded' || mode === 'formdata') {
+        const list = b[mode] = b[mode] || [];
+        const files = list.filter((f) => f.type === 'file');
+        const editable = list.filter((f) => f.type !== 'file');
+        parts.push(T.kvTable(editable, {
+          onChange: () => { b[mode] = files.concat(editable.map((f) => (mode === 'formdata' && !f.type ? Object.assign(f, { type: 'text' }) : f))); changed(); }
+        }));
+        if (files.length) parts.push(h('p.hint', { text: `${files.length} file field(s) (${files.map((f) => f.key).join(', ')}) are kept in the collection but can't be sent from here.` }));
+      } else {
+        parts.push(h('p.hint', { text: 'This request sends no body.' }));
+      }
+      wrap.replaceChildren(...parts);
+    };
+    draw();
+    return wrap;
+  }
+
+  /** Swap {{vars}} that stand outside JSON strings for placeholder strings; ones inside strings are fine as is. */
+  function parkBareVars(text, parked) {
+    let out = '', inString = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inString) {
+        out += c;
+        if (c === '\\') out += text[++i] || '';
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') { inString = true; out += c; continue; }
+      if (c === '{' && text[i + 1] === '{') {
+        const end = text.indexOf('}}', i + 2);
+        if (end > 0) { parked.push(text.slice(i, end + 2)); out += `"@@tester-var-${parked.length - 1}@@"`; i = end + 1; continue; }
+      }
+      out += c;
+    }
+    return out;
+  }
+
+  function renderScripts(it, changed) {
+    const box = (listen, title, hint) => {
+      const area = h('textarea', { rows: 7, spellcheck: 'false', style: 'width:100%', value: M.script(it, listen), placeholder: hint, oninput: () => { M.setScript(it, listen, area.value); changed(); } });
+      return [h('div.section-title', { text: title }), area];
+    };
+    return h('div', {},
+      box('prerequest', 'Pre-request script', '// runs before the request is sent\npm.environment.set("ts", Date.now())'),
+      box('test', 'Post-response script', '// runs after the response arrives\nconst body = pm.response.json();\npm.environment.set("token", body.access_token);\npm.test("status 200", () => pm.response.to.have.status(200));'),
+      h('p.hint', { text: 'Supported: pm.environment / pm.collectionVariables / pm.variables (get, set, unset), pm.request.headers, pm.response (code, json(), text(), headers.get), pm.test, pm.expect, console.log.' }));
+  }
+
+  document.addEventListener('DOMContentLoaded', () => T.boot());
+})();

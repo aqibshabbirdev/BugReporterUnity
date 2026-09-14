@@ -40,9 +40,10 @@ def create_app() -> Flask:
                 "db_error": err,
                 "db_env_vars_present": present}, (200 if err is None else 503)
 
-    from . import api, ingest
+    from . import api, ingest, tester
     app.register_blueprint(ingest.bp)
     app.register_blueprint(api.bp)
+    app.register_blueprint(tester.bp)
 
     # Dashboard: serve the React build; unknown paths fall through to index.html (SPA routing).
     @app.get("/", defaults={"path": ""})

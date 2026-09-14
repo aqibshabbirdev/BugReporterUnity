@@ -283,6 +283,28 @@ cd dashboard && npm install && npm run build   # outputs into ../backend/static
 git add ../backend/static && git commit && git push   # push = deploy
 ```
 
+## 6b. API tester — `/apitestingbruno`
+
+A small Postman-style page for the team's API collections, on the same app and sign-in as the dashboard
+(`https://pandabugsreporting.com/apitestingbruno`). Plain JS, no build step — the files in
+`backend/tester_static/` are served as-is, so deploying a change is copying them.
+
+- **Storage:** one `tester_docs` row per collection/environment, holding the **Postman v2.1 JSON document
+  itself** (`backend/app/tester.py`). The page edits it in place; unknown fields survive; Export returns a
+  file Postman opens. Saves carry a `version` — a stale save gets 409 (the page offers reload / save a copy).
+  Deleting a collection or environment is admin-only.
+- **Page:** `index.html` + `model.js` (Postman document helpers, `{{variable}}` resolution, auth inheritance,
+  a `pm.*` script sandbox covering pm.environment/collectionVariables/variables, pm.request.headers,
+  pm.response, pm.test, pm.expect) + `app.js` (sign-in, tree, editor) + `panels.js` (send, response,
+  dialogs, import/export, find & replace in URLs).
+- **Sending:** "Send from my browser" does a plain `fetch` (needed for localhost/LAN APIs; subject to CORS).
+  "Send via server" posts to `/api/tester/send` (`backend/app/tester_send.py`), which refuses anything not
+  globally routable — loopback, private ranges, link-local/metadata — and this machine's own IP (found from
+  its hostname; `TESTER_BLOCKED_IPS` adds more). It connects to the address it checked (no DNS rebinding),
+  never follows redirects, times out at 30s and caps responses at 10 MB. 120 sends/min per user.
+- Scripts in a collection run in the viewer's browser, like Postman runs them — treat a shared collection
+  as trusted team content.
+
 ## 7. Tester instructions (forwardable)
 
 1. Game mein kahin bhi bug dikhe → screen ke corner par **Report** button dabao.
