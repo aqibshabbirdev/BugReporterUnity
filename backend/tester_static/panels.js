@@ -50,7 +50,7 @@
     };
 
     S.sending = true;
-    S.results.set(it, { pending: true });
+    S.results.set(it.id, { pending: true });
     T.renderResponse();
     R.sendBtn && (R.sendBtn.disabled = true);
 
@@ -80,9 +80,9 @@
       for (const s of M.scriptsFor(it, parents, coll, 'test')) {
         absorb(M.runScript(s.code, { env, coll: collVars, local, response: res, name: it.name }), s.from, 'post-response');
       }
-      S.results.set(it, { res, sent: final, out });
+      S.results.set(it.id, { res, sent: final, out });
     } catch (e) {
-      S.results.set(it, { error: e.message, missing: e.missing, out });
+      S.results.set(it.id, { error: e.message, missing: e.missing, out });
     } finally {
       S.sending = false;
       if (R.sendBtn) R.sendBtn.disabled = false;
@@ -117,7 +117,7 @@
   T.renderResponse = function () {
     if (!R.response) return;
     const it = S.sel;
-    const r = it && !M.isFolder(it) ? S.results.get(it) : null;
+    const r = it && !M.isFolder(it) ? S.results.get(it.id) : null;
     if (!r) {
       R.response.replaceChildren(h('div.idle', {}, it && !M.isFolder(it) ? ['Press ', h('b', { text: 'Send' }), ' to see the response.', h('br'), h('span.faint', { text: 'Ctrl/Cmd+Enter sends · Ctrl/Cmd+S saves' })] : ''));
       return;
@@ -181,9 +181,10 @@
 
   /* ── dialogs ───────────────────────────────────────────────────────────── */
 
-  T.modal = function (title, body, buttons) {
+  /** onClose runs however the dialog closes (a button, ×, Escape, or a click outside). */
+  T.modal = function (title, body, buttons, onClose) {
     const overlay = document.getElementById('overlay');
-    const close = () => { overlay.replaceChildren(); document.removeEventListener('keydown', onKey); };
+    const close = () => { overlay.replaceChildren(); document.removeEventListener('keydown', onKey); if (onClose) onClose(); };
     const onKey = (ev) => { if (ev.key === 'Escape') close(); };
     document.addEventListener('keydown', onKey);
     const box = h('div.modal', { role: 'dialog', 'aria-label': title },
@@ -312,18 +313,56 @@
     find.focus();
   }
 
-  T.conflictDialog = function (info) {
-    T.modal('Someone saved this collection meanwhile', h('p', { text: `${(info && info.updatedBy) || 'A teammate'} saved a newer version while you were editing. Saving now would overwrite their changes.` }), [
-      { label: 'Keep editing', run: (close) => close() },
-      {
-        label: 'Save mine as a copy', run: async (close) => {
-          const data = M.clone(S.coll.data); data.info.name += ' (my copy)';
-          const r = await T.api('POST', '/api/tester/collections', { data });
-          S.colls.push(r); S.dirty = false; close(); await T.openColl(r.id); T.toast('Saved as a new collection');
-        }
-      },
-      { label: 'Load theirs (discard mine)', kind: 'danger', run: async (close) => { S.dirty = false; close(); await T.openColl(S.coll.id); } }
-    ]);
+  /** Short text for one side of a conflict: the body text, a header list, a script — not raw JSON where avoidable. */
+  function conflictPreview(c, v) {
+    if (c.unit === 'deleted') return v === 'delete' ? 'Delete it' : 'Keep it, with the edits';
+    if (v === undefined) return '(removed)';
+    let text;
+    if (v && typeof v === 'object') {
+      if (typeof v.raw === 'string') text = v.raw;
+      else if (Array.isArray(v) && v.every((x) => x && x.script)) text = v.map((e) => [].concat(e.script.exec || []).join('\n')).join('\n');
+      else if (Array.isArray(v) && v.every((x) => x && 'key' in x)) text = v.map((x) => `${x.disabled ? '// ' : ''}${x.key}: ${x.value}`).join('\n');
+      else if ('key' in v && 'value' in v) text = `${v.key} = ${v.value}`;
+      else text = JSON.stringify(v, null, 2);
+    } else text = String(v);
+    text = text || '(empty)';
+    return text.length > 600 ? text.slice(0, 600) + '\n…' : text;
+  }
+
+  /**
+   * Fields that both this page and `who` changed since the last load. Resolves {conflictId: 'mine' |
+   * 'theirs'} — every row starts on "mine", since saving is what brought the user here — or null.
+   */
+  T.conflictDialog = function (conflicts, who) {
+    return new Promise((resolve) => {
+      const choices = {};
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      const rows = conflicts.map((c) => {
+        choices[c.id] = 'mine';
+        const option = (side, title) => h('label.choice', {},
+          h('input', { type: 'radio', name: 'c-' + c.id, checked: side === 'mine', onchange: () => { choices[c.id] = side; } }),
+          h('div', {}, h('div.choice-title', { text: title }), h('pre.code', { text: conflictPreview(c, c[side]) })));
+        return h('div.conflict', {},
+          h('div.conflict-head', {}, h('b', { text: c.label }), h('span.faint', { text: ' · ' + M.unitLabel(c.unit) })),
+          h('div.choices', {}, option('mine', 'Keep mine'), option('theirs', `Keep ${who || 'theirs'}`)));
+      });
+      T.modal(`You and ${who || 'a teammate'} changed the same thing`, h('div', {},
+        h('p.hint', { text: `Everything else is merged automatically. ${conflicts.length === 1 ? 'Pick' : 'For each of these, pick'} which version to keep:` }),
+        rows), [
+        { label: 'Cancel', run: (close) => close() },
+        { label: 'Merge', kind: 'primary', run: (close) => { finish(choices); close(); } }
+      ], () => finish(null));
+    });
+  };
+
+  /** Keep this page's edits as a new collection (when the shared one was deleted meanwhile). */
+  T.saveAsCopy = async function () {
+    try {
+      const data = M.clone(S.coll.data); data.info = data.info || {}; data.info.name = (data.info.name || S.coll.name) + ' (my copy)';
+      const r = await T.api('POST', '/api/tester/collections', { data });
+      S.colls.push(r); S.dirty = false; await T.openColl(r.id); T.toast('Saved as a new collection');
+    } catch (e) { T.toast('Could not save a copy: ' + e.message, 'error'); }
   };
 
   /* ── import ────────────────────────────────────────────────────────────── */

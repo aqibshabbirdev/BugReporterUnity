@@ -5,7 +5,9 @@ those documents in place (unknown fields ride along untouched) and Export hands 
 so a collection still opens in Postman after living here.
 
 Saves are optimistic: every document has a version, a PUT names the version it was edited from, and a
-stale one gets 409 instead of silently overwriting a teammate's change.
+stale one gets 409 instead of silently overwriting a teammate's change. The page then three-way merges
+its edits onto the newer version (model.js M.merge3) and saves again — which is why every item carries a
+stable `id` (_ensure_item_ids): the merge matches requests and folders across versions by it.
 
 Same sign-in as the dashboard (the br_session cookie). Requests either go straight from the browser, or
 through /api/tester/send — see tester_send.py for what the server refuses to reach.
@@ -61,12 +63,45 @@ def _mutating_guard():
         abort(400, description="missing X-Tester header")
 
 
+def _ensure_item_ids(data):
+    """Give every folder/request a unique `id` (optional in the Postman v2.1 schema, so exports still
+    open in Postman). A missing id gets one; a repeated id — a pasted copy — gets a fresh one.
+    Returns True if anything changed."""
+    seen, changed = set(), False
+    stack = list(data.get("item") or [])
+    while stack:
+        it = stack.pop()
+        if not isinstance(it, dict):
+            continue
+        iid = it.get("id")
+        if not isinstance(iid, str) or not iid or iid in seen:
+            it["id"] = db.new_id()
+            changed = True
+        seen.add(it["id"])
+        if isinstance(it.get("item"), list):
+            stack.extend(it["item"])
+    return changed
+
+
+def _all_items_have_ids(data):
+    stack = list(data.get("item") or []) if isinstance(data, dict) else []
+    while stack:
+        it = stack.pop()
+        if isinstance(it, dict):
+            if not isinstance(it.get("id"), str) or not it["id"]:
+                return False
+            if isinstance(it.get("item"), list):
+                stack.extend(it["item"])
+    return True
+
+
 def _validate(kind, data):
     if not isinstance(data, dict):
         return None, "document must be a JSON object"
     if kind == "collections":
         if not isinstance(data.get("item"), list):
             return None, "not a Postman collection (no item list)"
+        _ensure_item_ids(data)
         info = data.setdefault("info", {})
         info.setdefault("schema", "https://schema.getpostman.com/json/collection/v2.1.0/collection.json")
         name = str(info.get("name") or "Untitled collection")
@@ -127,8 +162,22 @@ def get_doc(kind, doc_id):
         ).fetchone()
     if not row:
         return jsonify(error="not found"), 404
+    data = json.loads(row["data"])
+    if kind == "collections" and _ensure_item_ids(data):
+        # A document stored before ids existed. Persist them as a new version (only if nobody saved in
+        # between), then return what is stored, so every client merges against the same ids.
+        with db.connect() as conn:
+            conn.execute(
+                "UPDATE tester_docs SET data = ?, version = version + 1 WHERE kind = ? AND id = ? AND version = ?",
+                (json.dumps(data, ensure_ascii=False), kind, doc_id, row["version"]),
+            )
+            row = conn.execute(
+                "SELECT id, name, data, version, updated_at, updated_by FROM tester_docs WHERE kind = ? AND id = ?",
+                (kind, doc_id),
+            ).fetchone()
+        data = json.loads(row["data"])
     out = _summary(row)
-    out["data"] = json.loads(row["data"])
+    out["data"] = data
     return jsonify(out)
 
 
@@ -137,6 +186,11 @@ def get_doc(kind, doc_id):
 def save_doc(kind, doc_id):
     _mutating_guard()
     body = request.get_json(silent=True) or {}
+    if kind == "collections" and not _all_items_have_ids(body.get("data")):
+        # Only a page loaded before item ids existed sends this. Assigning fresh ids here would make
+        # every other open page see all requests deleted and re-added, so ask for a reload instead.
+        return jsonify(error="this page is out of date — reload it before saving "
+                             "(Export the collection first if you have unsaved edits)"), 400
     parsed, err = _validate(_kind(kind), body.get("data"))
     if err:
         return jsonify(error=err), 400

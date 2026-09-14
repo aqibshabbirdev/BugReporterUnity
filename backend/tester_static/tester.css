@@ -33,7 +33,11 @@ button.danger { color: var(--red); }
 .boot { padding: 40px; color: var(--muted); }
 
 /* shell */
-#app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+#app { height: 100%; display: grid; grid-template-rows: auto auto 1fr; }
+#app > .top { grid-row: 1; } #app > .banner { grid-row: 2; } #app > .main { grid-row: 3; }
+.banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 14px; font-size: 13px; background: rgba(210,153,34,.12); border-bottom: 1px solid rgba(210,153,34,.35); color: #f2cc60; }
+.banner[hidden] { display: none; }
+.banner button { padding: 3px 10px; font-size: 12px; }
 .top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 14px; background: var(--bg2); border-bottom: 1px solid var(--border-soft); }
 .brand { font-weight: 600; margin-right: 6px; white-space: nowrap; }
 .top .group { display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; min-width: 0; }
@@ -136,6 +140,17 @@ table.headers td:first-child { color: var(--muted); width: 32%; }
 #toasts { position: fixed; right: 16px; bottom: 16px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
 .toast { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.4); max-width: 420px; }
 .toast.error { border-color: rgba(248,81,73,.6); color: #ffb3ad; }
+
+/* merge conflicts */
+.conflict { border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.conflict-head { margin-bottom: 8px; }
+.choices { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.choice { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; border: 1px solid var(--border-soft); border-radius: 6px; padding: 8px; min-width: 0; }
+.choice:has(input:checked) { border-color: var(--accent); background: rgba(68,147,248,.08); }
+.choice > div { min-width: 0; flex: 1; }
+.choice-title { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.choice pre.code { max-height: 160px; font-size: 12px; padding: 6px 8px; }
+@media (max-width: 760px) { .choices { grid-template-columns: 1fr; } }
 
 /* sign-in */
 .gate { display: grid; place-items: center; height: 100%; padding: 16px; }

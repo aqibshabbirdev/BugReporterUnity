@@ -64,19 +64,23 @@
     colls: [], envs: [],
     coll: null,            // {id, name, version, data}
     env: null,             // {id, name, version, data}
+    base: null,            // coll.data as last saved on the server (coll.version) — the common ancestor for merges
+    envBase: null,
     sel: null,             // the selected item object inside coll.data
-    open: new Set(),       // expanded folder objects
+    open: new Set(),       // ids of expanded folders
     dirty: false, envDirty: false,
+    saving: false, envSaving: false,
+    remote: null,          // a newer saved version of the open collection, while there are unsaved edits here
     filter: '',
     tab: 'params',
     mode: ls.get('mode', 'server'),
     verifyTls: ls.get('verifyTls', '1') === '1',
     local: [],             // pm.variables for this page session
-    results: new WeakMap() // item -> last {res | error, scripts}
+    results: new Map()     // item id -> last {res | error, scripts}
   });
 
   T.markDirty = function () {
-    if (!S.dirty) { S.dirty = true; T.renderSaveState(); }
+    if (!S.dirty) { S.dirty = true; T.renderSaveState(); if (S.remote) T.renderBanner(); }
   };
 
   T.envStore = () => M.varStore(() => (S.env ? S.env.data.values : S.local), () => { if (S.env) S.envDirty = true; });
@@ -99,6 +103,7 @@
       return;
     }
     [S.colls, S.envs] = await Promise.all([T.api('GET', '/api/tester/collections'), T.api('GET', '/api/tester/environments')]);
+    T.listSig = listSignature(S.colls, S.envs);
     renderShell();
     const envId = ls.get('env', '');
     if (S.envs.some((x) => x.id === envId)) await T.openEnv(envId);
@@ -151,18 +156,20 @@
       R.tree);
     R.editor = h('section.editor');
     R.response = h('section.response');
-    document.getElementById('app').replaceChildren(R.top, h('div.main', {}, R.side, h('div.work', {}, R.editor, R.response)));
+    R.banner = h('div.banner', { hidden: true });
+    document.getElementById('app').replaceChildren(R.top, R.banner, h('div.main', {}, R.side, h('div.work', {}, R.editor, R.response)));
+    T.startPolling();
   }
 
   T.renderAll = function () {
-    T.renderTop(); T.renderTree(); T.renderEditor(); T.renderResponse();
+    T.renderTop(); T.renderBanner(); T.renderTree(); T.renderEditor(); T.renderResponse();
   };
 
   T.renderSaveState = function () {
     if (!R.saved) return;
     R.saved.className = 'saved' + (S.dirty ? ' dirty' : '');
-    R.saved.textContent = !S.coll ? '' : S.dirty ? '● Unsaved' : 'Saved';
-    if (R.saveBtn) R.saveBtn.disabled = !S.dirty;
+    R.saved.textContent = !S.coll ? '' : S.saving ? 'Saving…' : S.dirty ? '● Unsaved' : 'Saved';
+    if (R.saveBtn) R.saveBtn.disabled = !S.dirty || S.saving;
   };
 
   T.renderTop = function () {
@@ -198,52 +205,213 @@
 
   /* ── documents ─────────────────────────────────────────────────────────── */
 
+  const summary = (d) => ({ id: d.id, name: d.name, version: d.version, updatedAt: d.updatedAt, updatedBy: d.updatedBy });
+  const sameDoc = (a, b) => M.stable(a) === M.stable(b);
+  const modalOpen = () => document.getElementById('overlay').childElementCount > 0;
+
   T.openColl = async function (id) {
     const doc = await T.api('GET', '/api/tester/collections/' + id);
-    S.coll = doc; S.dirty = false; S.sel = null; S.open = new Set();
+    M.ensureIds(doc.data.item);
+    S.coll = doc; S.base = M.clone(doc.data); S.dirty = false; S.sel = null; S.open = new Set(); S.remote = null;
     ls.set('coll', id);
     // Open the first folder and select its first request, so the page never starts blank.
     const firstFolder = doc.data.item.find(M.isFolder);
-    if (firstFolder) S.open.add(firstFolder);
+    if (firstFolder) S.open.add(firstFolder.id);
     let firstReq = null;
     M.walk(doc.data.item, (it) => { if (!firstReq && !M.isFolder(it)) firstReq = it; });
     S.sel = firstReq;
-    if (firstReq) (M.parentsOf(doc.data.item, firstReq) || []).forEach((p) => S.open.add(p));
+    if (firstReq) (M.parentsOf(doc.data.item, firstReq) || []).forEach((p) => S.open.add(p.id));
     T.renderAll();
   };
 
   T.openEnv = async function (id) {
     if (S.envDirty && S.env) await T.saveEnv(true);
     S.env = id ? await T.api('GET', '/api/tester/environments/' + id) : null;
+    S.envBase = S.env ? M.clone(S.env.data) : null;
     S.envDirty = false;
     ls.set('env', id || '');
     T.renderTop();
   };
 
+  /**
+   * Swap in a new document for the open collection (a teammate's version, or a merge onto it). The
+   * selection, expanded folders and last responses follow item ids, so the page stays where it was.
+   */
+  function applyColl(latest, data) {
+    const selId = S.sel && S.sel.id;
+    S.coll = Object.assign(summary(latest), { data });
+    S.base = M.clone(latest.data);
+    S.dirty = !sameDoc(data, latest.data);
+    S.sel = M.findById(data.item, selId);
+    S.remote = null;
+    const entry = S.colls.find((c) => c.id === latest.id); if (entry) Object.assign(entry, summary(latest));
+    T.renderAll();
+  }
+
+  /**
+   * Bring the newest saved version of the open collection in. Without local edits it just replaces the
+   * document; with edits, those are three-way merged onto it — only fields both sides changed need a
+   * decision. Resolves false if the user cancels or the collection is gone.
+   */
+  T.pullColl = async function () {
+    const id = S.coll.id;
+    let latest;
+    try { latest = await T.api('GET', '/api/tester/collections/' + id); } catch (e) {
+      if (e.status !== 404) throw e;
+      S.remote = { id, gone: true }; T.renderBanner();
+      return false;
+    }
+    if (!S.coll || S.coll.id !== id) return false;
+    M.ensureIds(latest.data.item);
+    if (!S.dirty) { applyColl(latest, M.clone(latest.data)); return true; }
+    M.ensureIds(S.coll.data.item);
+    const first = M.merge3(S.base, S.coll.data, latest.data);
+    let doc = first.doc;
+    if (first.conflicts.length) {
+      const choices = await T.conflictDialog(first.conflicts, latest.updatedBy);
+      if (!choices) { S.remote = summary(latest); T.renderBanner(); return false; }
+      doc = M.merge3(S.base, S.coll.data, latest.data, choices).doc;   // again: the dialog may have taken a while
+    }
+    applyColl(latest, M.clone(doc));
+    return true;
+  };
+
   T.saveColl = async function () {
-    if (!S.coll || !S.dirty) return;
+    if (!S.coll || !S.dirty || S.saving) return;
+    S.saving = true;
+    T.renderSaveState();
+    let mergedFrom = null;
     try {
-      const r = await T.api('PUT', '/api/tester/collections/' + S.coll.id, { data: S.coll.data, version: S.coll.version });
-      S.coll.version = r.version; S.coll.name = r.name; S.dirty = false;
-      const entry = S.colls.find((c) => c.id === r.id); if (entry) Object.assign(entry, r);
-      T.renderTop();
-      T.toast('Collection saved');
+      for (let attempt = 0; attempt < 5; attempt++) {
+        M.ensureIds(S.coll.data.item);
+        const sent = M.clone(S.coll.data);
+        try {
+          const r = await T.api('PUT', '/api/tester/collections/' + S.coll.id, { data: sent, version: S.coll.version });
+          Object.assign(S.coll, summary(r));
+          S.base = sent;
+          S.dirty = !sameDoc(S.coll.data, sent);      // edits typed while the save was in flight stay unsaved
+          S.remote = null;
+          const entry = S.colls.find((c) => c.id === r.id); if (entry) Object.assign(entry, summary(r));
+          T.renderTop(); T.renderBanner();
+          T.toast(mergedFrom ? `Saved — merged with ${mergedFrom}'s changes` : 'Collection saved');
+          return;
+        } catch (e) {
+          if (e.status !== 409) throw e;
+          // Someone saved first: merge onto their version and try again.
+          if (!(await T.pullColl())) return;
+          mergedFrom = S.coll.updatedBy || 'a teammate';
+          if (!S.dirty) { T.toast(`${mergedFrom} had already saved the same changes`); return; }
+        }
+      }
+      T.toast('Could not save — the collection keeps changing. Try again in a moment.', 'error');
     } catch (e) {
-      if (e.status === 409) T.conflictDialog(e.data); else T.toast('Save failed: ' + e.message, 'error');
+      if (e.status === 404) { S.remote = { id: S.coll.id, gone: true }; T.renderBanner(); }
+      T.toast('Save failed: ' + e.message, 'error');
+    } finally {
+      S.saving = false;
+      T.renderSaveState();
     }
   };
 
   T.saveEnv = async function (quiet) {
-    if (!S.env || !S.envDirty) return;
+    if (!S.env || !S.envDirty || S.envSaving) return;
+    S.envSaving = true;
     try {
-      const r = await T.api('PUT', '/api/tester/environments/' + S.env.id, { data: S.env.data, version: S.env.version });
-      S.env.version = r.version; S.envDirty = false;
-      if (!quiet) T.toast('Environment saved');
+      for (let attempt = 0; attempt < 5; attempt++) {
+        const sent = M.clone(S.env.data);
+        try {
+          const r = await T.api('PUT', '/api/tester/environments/' + S.env.id, { data: sent, version: S.env.version });
+          S.env.version = r.version; S.env.updatedBy = r.updatedBy;
+          S.envBase = sent;
+          S.envDirty = !sameDoc(S.env.data, sent);
+          if (!quiet) T.toast('Environment saved');
+          return;
+        } catch (e) {
+          if (e.status !== 409) throw e;
+          // Merge by variable name onto the newer version; a variable both changed keeps this page's value.
+          const latest = await T.api('GET', '/api/tester/environments/' + S.env.id);
+          const merged = M.mergeEnvValues(S.envBase.values, S.env.data.values, latest.data.values);
+          const data = Object.assign(M.clone(latest.data), { values: M.clone(merged.values) });
+          if (S.env.data.name !== S.envBase.name) data.name = S.env.data.name;
+          S.envBase = M.clone(latest.data);
+          S.env = Object.assign(latest, { name: data.name, data });
+          if (merged.overridden.length) T.toast(`${latest.updatedBy} also changed ${merged.overridden.join(', ')} — kept your value`);
+        }
+      }
+      T.toast('Could not save the environment — it keeps changing. Try again.', 'error');
     } catch (e) {
-      if (e.status === 409) {
-        T.toast(`${e.data.updatedBy} changed "${S.env.name}" meanwhile — reloaded it; re-apply your change.`, 'error');
-        S.env = await T.api('GET', '/api/tester/environments/' + S.env.id); S.envDirty = false;
-      } else T.toast('Environment save failed: ' + e.message, 'error');
+      T.toast('Environment save failed: ' + e.message, 'error');
+    } finally {
+      S.envSaving = false;
+    }
+  };
+
+  /* ── live updates ──────────────────────────────────────────────────────── */
+
+  // Every few seconds (and when the tab comes back into view) look at the version numbers. A newer
+  // collection loads by itself when there's nothing unsaved here; otherwise a banner offers the merge.
+  const POLL_MS = 12000;
+  let polling = false;
+  const listSignature = (colls, envs) => M.stable([colls.map((c) => [c.id, c.name]), envs.map((e) => [e.id, e.name])]);
+  // A field in the editor has focus: re-rendering under it would drop the caret, so offer instead of loading.
+  const editing = () => { const a = document.activeElement; return !!(a && R.editor && R.editor.contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)); };
+
+  T.poll = async function () {
+    if (polling || document.hidden || !S.me || !R.banner) return;
+    polling = true;
+    try {
+      const [colls, envs] = await Promise.all([T.api('GET', '/api/tester/collections'), T.api('GET', '/api/tester/environments')]);
+      const sig = listSignature(colls, envs);
+      S.colls = colls; S.envs = envs;
+
+      if (S.coll && !S.saving) {
+        const cur = colls.find((c) => c.id === S.coll.id);
+        if (!cur) {
+          if (S.dirty) { S.remote = { id: S.coll.id, gone: true }; T.renderBanner(); }
+          else { T.toast(`"${S.coll.name}" was deleted`); S.coll = null; S.sel = null; if (colls[0]) await T.openColl(colls[0].id); else T.renderAll(); }
+        } else if (cur.version > S.coll.version) {
+          if (!S.dirty && !modalOpen() && !editing()) { if (await T.pullColl()) T.toast(`Updated — ${cur.updatedBy} saved changes`); }
+          else if (!S.remote || S.remote.version !== cur.version) { S.remote = cur; T.renderBanner(); }
+        }
+      }
+      if (S.env && !S.envDirty && !S.envSaving && !modalOpen()) {
+        const cur = envs.find((e) => e.id === S.env.id);
+        if (cur && cur.version > S.env.version) {
+          S.env = await T.api('GET', '/api/tester/environments/' + cur.id);
+          S.envBase = M.clone(S.env.data);
+          T.renderVarWarning();
+        }
+      }
+      if (sig !== T.listSig) { T.listSig = sig; T.renderTop(); }
+    } catch (e) {
+      if (e.status === 401) location.reload();     // signed out elsewhere
+    } finally {
+      polling = false;
+    }
+  };
+
+  T.startPolling = function () {
+    if (T.pollTimer) return;
+    T.pollTimer = setInterval(T.poll, POLL_MS);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) T.poll(); });
+    window.addEventListener('focus', () => T.poll());
+  };
+
+  T.renderBanner = function () {
+    if (!R.banner) return;
+    const r = S.remote;
+    R.banner.replaceChildren();
+    R.banner.hidden = !(r && S.coll && r.id === S.coll.id);
+    if (R.banner.hidden) return;
+    if (r.gone) {
+      R.banner.append(h('span', { text: `"${S.coll.name}" was deleted by an admin. Your unsaved edits are only on this page.` }),
+        h('button', { text: 'Save them as a new collection', onclick: () => T.saveAsCopy() }));
+    } else if (S.dirty) {
+      R.banner.append(h('span', { text: `${r.updatedBy || 'A teammate'} saved changes to "${r.name}". Your unsaved edits are kept — merge to bring theirs in.` }),
+        h('button.primary', { text: 'Merge now', onclick: async () => { if (await T.pullColl()) T.toast(S.dirty ? 'Merged — your edits are still unsaved' : 'Merged — nothing left to save'); } }));
+    } else {
+      R.banner.append(h('span', { text: `${r.updatedBy || 'A teammate'} saved changes to "${r.name}".` }),
+        h('button.primary', { text: 'Load them', onclick: () => T.pullColl() }));
     }
   };
 
@@ -263,7 +431,7 @@
     if (name === null) return;
     item.name = name.trim() || item.name;
     (folder ? folder.item : S.coll.data.item).push(item);
-    if (folder) S.open.add(folder);
+    if (folder) S.open.add(folder.id);
     S.sel = item; S.tab = 'params';
     T.markDirty(); T.renderTree(); T.renderEditor(); T.renderResponse();
   };
@@ -297,10 +465,10 @@
         const pad = `padding-left:${8 + depth * 14}px`;
         const more = h('button.ghost.more', { text: '⋯', title: 'Actions', onclick: (ev) => { ev.stopPropagation(); T.itemMenu(ev.currentTarget, it); } });
         if (M.isFolder(it)) {
-          const open = S.open.has(it) || !!S.filter;
+          const open = S.open.has(it.id) || !!S.filter;
           frag.append(h('div.row', {
             class: S.sel === it ? 'sel' : '', style: pad,
-            onclick: () => { if (S.open.has(it) && S.sel === it) S.open.delete(it); else S.open.add(it); S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
+            onclick: () => { if (S.open.has(it.id) && S.sel === it) S.open.delete(it.id); else S.open.add(it.id); S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
           }, h('span.caret', { text: open ? '▾' : '▸' }), h('span.label', {}, highlight(it.name)), h('span.count', { text: M.countRequests(it.item) }), more));
           if (open) draw(it.item, depth + 1);
         } else {
@@ -341,7 +509,7 @@
     entries.push({ label: 'Rename', run: () => { const n = prompt('Name', it.name); if (n && n.trim()) { it.name = n.trim(); T.markDirty(); T.renderTree(); T.renderEditor(); } } });
     entries.push({
       label: 'Duplicate', run: () => {
-        const list = M.containerOf(S.coll.data, it); const copy = M.clone(it);
+        const list = M.containerOf(S.coll.data, it); const copy = M.freshIds(M.clone(it));
         copy.name = it.name + ' copy'; list.splice(list.indexOf(it) + 1, 0, copy);
         S.sel = copy; T.markDirty(); T.renderTree(); T.renderEditor(); T.renderResponse();
       }

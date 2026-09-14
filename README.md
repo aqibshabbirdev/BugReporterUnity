@@ -291,8 +291,15 @@ A small Postman-style page for the team's API collections, on the same app and s
 
 - **Storage:** one `tester_docs` row per collection/environment, holding the **Postman v2.1 JSON document
   itself** (`backend/app/tester.py`). The page edits it in place; unknown fields survive; Export returns a
-  file Postman opens. Saves carry a `version` — a stale save gets 409 (the page offers reload / save a copy).
-  Deleting a collection or environment is admin-only.
+  file Postman opens. Deleting a collection or environment is admin-only.
+- **Several people at once:** saves carry a `version`; a stale save gets 409 and the page three-way merges
+  its edits onto the newer version (`M.merge3` in `model.js`), matching requests and folders by their `id`
+  (the server gives every item one). Different requests, or different parts of one request (body, headers,
+  URL, each script), merge silently; only a field both people changed asks "keep mine / keep theirs".
+  Environments merge per variable (same variable changed on both sides: the saver's value wins). Every 12s
+  the page checks versions: with nothing unsaved it loads the newer collection in place, otherwise a banner
+  offers "Merge now". A page loaded before ids existed can't save (400, "reload") — its id-less items would
+  look like a full delete-and-re-add to everyone else.
 - **Page:** `index.html` + `model.js` (Postman document helpers, `{{variable}}` resolution, auth inheritance,
   a `pm.*` script sandbox covering pm.environment/collectionVariables/variables, pm.request.headers,
   pm.response, pm.test, pm.expect) + `app.js` (sign-in, tree, editor) + `panels.js` (send, response,
