@@ -1,0 +1,15 @@
+name: bug_reporter_example
+description: Minimal app wired to the Bug Reporter SDK.
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  bug_reporter:
+    path: ../
+
+flutter:
+  uses-material-design: true

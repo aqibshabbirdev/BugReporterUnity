@@ -142,6 +142,14 @@ Runtime pieces (`unity-sdk/Packages/com.bugreporter.sdk/Runtime/`):
 with `Enabled = ConstantsData_M.MpVerboseLogs` (dev-only). Note the boot script must exist in the
 BUILD you hand testers — in-editor presence isn't enough for the Android build (rebuild after adding).
 
+## 3b. Flutter SDK
+
+`flutter-sdk/bug_reporter` is a Flutter package that sends the same reports as the Unity SDK (same
+`/api/report` multipart fields: `report` JSON, `logs`, `screenshot`, `thumbnail`, `clip`), so the dashboard
+needs no changes. Setup is `BugReporter.init(...)` plus `BugReporterOverlay` in `MaterialApp.builder`;
+screenshots come from a RepaintBoundary around the app, JPEG encoding runs in a background isolate.
+Install, options and usage: [flutter-sdk/bug_reporter/README.md](flutter-sdk/bug_reporter/README.md).
+
 ## 4. cPanel deployment (current) — https://pandabugsreporting.com
 
 Moved off Wasmer on 2026-09-14 as a **fresh start** (no issues/uploads migrated). Runs on the GoDaddy

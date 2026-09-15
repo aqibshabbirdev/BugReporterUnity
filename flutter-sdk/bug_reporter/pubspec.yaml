@@ -1,0 +1,22 @@
+name: bug_reporter
+description: In-app bug reports for the Bug Reporter dashboard — floating report button, screenshot, recent logs, device info, retry + offline queue, optional rolling clip.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+  flutter: ">=3.32.0"
+
+dependencies:
+  device_info_plus: ^13.2.0
+  flutter:
+    sdk: flutter
+  http: ^1.6.0
+  image: ^4.10.1
+  package_info_plus: ^10.2.1
+  path_provider: ^2.1.6
+
+dev_dependencies:
+  flutter_lints: ^6.0.0
+  flutter_test:
+    sdk: flutter
