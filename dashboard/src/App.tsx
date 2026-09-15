@@ -14,6 +14,8 @@ function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
       <div className="topbar">
         <span className="brand" style={{ cursor: 'pointer' }} onClick={() => nav('/')}>🐞 Bug Reporter</span>
         <span className="spacer" />
+        {/* A plain link, not a router Link: the API tester is a separate page served by Flask. */}
+        <a className="btn" href="/apitestingbruno">🧪 API Tester</a>
         <span className="muted small">{me.email}</span>
         <button onClick={async () => { await api.logout(); onLogout() }}>Sign out</button>
       </div>
