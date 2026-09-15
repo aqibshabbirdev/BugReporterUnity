@@ -9,6 +9,9 @@ stale one gets 409 instead of silently overwriting a teammate's change. The page
 its edits onto the newer version (model.js M.merge3) and saves again — which is why every item carries a
 stable `id` (_ensure_item_ids): the merge matches requests and folders across versions by it.
 
+Test marks (tester_marks) are kept outside the documents: marking a request verified or not working is
+one small write that doesn't bump the collection's version, so it never turns into a merge.
+
 Same sign-in as the dashboard (the br_session cookie). Requests either go straight from the browser, or
 through /api/tester/send — see tester_send.py for what the server refuses to reach.
 """
@@ -225,9 +228,64 @@ def delete_doc(kind, doc_id):
         return jsonify(error="only an admin can delete a shared " + kind[:-1]), 403
     with db.connect() as conn:
         cur = conn.execute("DELETE FROM tester_docs WHERE kind = ? AND id = ?", (_kind(kind), doc_id))
+        if kind == "collections":
+            conn.execute("DELETE FROM tester_marks WHERE collection_id = ?", (doc_id,))
     if cur.rowcount == 0:
         return jsonify(error="not found"), 404
     return jsonify(ok=True)
+
+
+# ── test marks ──────────────────────────────────────────────────────────────
+
+MARK_STATUSES = ("verified", "failing")     # "pending" = no row
+
+
+def _mark_json(row):
+    return {"status": row["status"], "note": row["note"], "responseCode": row["response_code"],
+            "markedBy": row["marked_by"], "markedAt": row["marked_at"]}
+
+
+@bp.get("/api/tester/collections/<coll_id>/marks")
+@require_user
+def list_marks(coll_id):
+    with db.connect() as conn:
+        rows = conn.execute(
+            """SELECT item_id, status, note, response_code, marked_by, marked_at
+               FROM tester_marks WHERE collection_id = ?""", (coll_id,)
+        ).fetchall()
+    return jsonify({r["item_id"]: _mark_json(r) for r in rows})
+
+
+@bp.put("/api/tester/collections/<coll_id>/marks/<item_id>")
+@require_user
+def set_mark(coll_id, item_id):
+    _mutating_guard()
+    body = request.get_json(silent=True) or {}
+    status = body.get("status")
+    if status != "pending" and status not in MARK_STATUSES:
+        return jsonify(error="status must be pending, verified or failing"), 400
+    if not item_id or len(item_id) > 64:
+        return jsonify(error="invalid request id"), 400
+    try:
+        code = int(body["responseCode"]) if body.get("responseCode") is not None else None
+    except (TypeError, ValueError):
+        code = None
+    note = str(body.get("note") or "")[:2000]
+    ts = db.now()
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM tester_docs WHERE kind = 'collections' AND id = ?", (coll_id,)).fetchone():
+            return jsonify(error="not found"), 404
+        if status == "pending":
+            conn.execute("DELETE FROM tester_marks WHERE collection_id = ? AND item_id = ?", (coll_id, item_id))
+            return jsonify(status="pending")
+        conn.execute(
+            """INSERT INTO tester_marks (collection_id, item_id, status, note, response_code, marked_by, marked_at)
+               VALUES (?,?,?,?,?,?,?)
+               ON DUPLICATE KEY UPDATE status = VALUES(status), note = VALUES(note),
+                 response_code = VALUES(response_code), marked_by = VALUES(marked_by), marked_at = VALUES(marked_at)""",
+            (coll_id, item_id, status, note, code, g.user["email"], ts),
+        )
+    return jsonify(status=status, note=note, responseCode=code, markedBy=g.user["email"], markedAt=ts)
 
 
 # ── sending ─────────────────────────────────────────────────────────────────

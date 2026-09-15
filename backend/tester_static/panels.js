@@ -114,6 +114,16 @@
 
   let resTab = 'body', pretty = true;
 
+  /** After a send the tester is looking at the answer — let them give the verdict right there. */
+  function markButtons(it) {
+    const status = T.statusOf(it);
+    return h('span.res-mark', {},
+      status === 'verified' ? h('span.mk-done.mk-verified', { text: '✓ Verified' })
+        : h('button.mk-btn.mk-verified', { title: 'Tested & verified', onclick: () => T.setMark(it, 'verified') }, h('span.mk-ico', { text: '✓' }), 'Mark verified'),
+      status === 'failing' ? h('span.mk-done.mk-failing', { text: '✕ Not working' })
+        : h('button.mk-btn.mk-failing', { title: 'Not working as expected', onclick: () => T.markFailing(it) }, h('span.mk-ico', { text: '✕' }), 'Not working'));
+  }
+
   T.renderResponse = function () {
     if (!R.response) return;
     const it = S.sel;
@@ -143,7 +153,8 @@
       h('span', { text: res.timeMs + ' ms' }),
       h('span', { text: fmtSize(res.size) + (res.truncated ? ' (truncated)' : '') }),
       h('span.faint', { text: res.via === 'server' ? `via server → ${res.address}` : 'from your browser' }),
-      res.note ? h('span.warn', { text: res.note }) : ''));
+      res.note ? h('span.warn', { text: res.note }) : '',
+      markButtons(it)));
     out.errors.forEach((e) => parts.push(h('div.error-box', { text: e })));
 
     const headerCount = (res.headers || []).length;

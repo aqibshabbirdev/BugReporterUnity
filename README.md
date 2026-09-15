@@ -300,6 +300,11 @@ A small Postman-style page for the team's API collections, on the same app and s
   the page checks versions: with nothing unsaved it loads the newer collection in place, otherwise a banner
   offers "Merge now". A page loaded before ids existed can't save (400, "reload") — its id-less items would
   look like a full delete-and-re-add to everyone else.
+- **Test marks:** every request is *Pending* until a tester marks it *Verified* (✓) or *Not working* (✕, with an
+  optional note). Marks live in `tester_marks` (collection id + item id), not in the collection document, so a
+  mark saves at once, never bumps the version and never needs a merge. The tree shows each request's mark and
+  per-folder counts, the sidebar filters by status, and the 12s poll picks up teammates' marks. Each mark keeps
+  who, when and the HTTP status of the last response on that page.
 - **Page:** `index.html` + `model.js` (Postman document helpers, `{{variable}}` resolution, auth inheritance,
   a `pm.*` script sandbox covering pm.environment/collectionVariables/variables, pm.request.headers,
   pm.response, pm.test, pm.expect) + `app.js` (sign-in, tree, editor) + `panels.js` (send, response,

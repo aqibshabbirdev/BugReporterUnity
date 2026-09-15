@@ -141,6 +141,36 @@ table.headers td:first-child { color: var(--muted); width: 32%; }
 .toast { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.4); max-width: 420px; }
 .toast.error { border-color: rgba(248,81,73,.6); color: #ffb3ad; }
 
+/* test marks */
+.status-bar { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px; border-bottom: 1px solid var(--border-soft); }
+.st-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 12px; border-radius: 999px; background: transparent; color: var(--muted); }
+.st-chip .n { font-variant-numeric: tabular-nums; color: var(--faint); }
+.st-chip.on { background: var(--bg3); color: var(--text); border-color: #444c56; }
+.st-chip.on .n { color: var(--text); }
+.st-verified .mk-ico { color: var(--green); } .st-failing .mk-ico { color: var(--red); } .st-pending .mk-ico { color: var(--faint); }
+.row .mk { width: 16px; text-align: center; flex: none; font-size: 12px; font-weight: 700; }
+.mk-pending { color: var(--faint); font-weight: 400 !important; }
+.mk-verified { color: var(--green); }
+.mk-failing { color: var(--red); }
+.row .count .c-ok { color: var(--green); }
+.row .count .c-bad { color: var(--red); }
+.markbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 2px; font-size: 12px; }
+.mk-group { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+.mk-group .mk-btn { border: 0; border-radius: 0; border-right: 1px solid var(--border); background: transparent; color: var(--muted); padding: 4px 10px; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
+.mk-group .mk-btn:last-child { border-right: 0; }
+.mk-group .mk-btn:hover { background: var(--bg3); color: var(--text); }
+.mk-group .mk-btn.on.mk-pending { background: var(--bg3); color: var(--text); }
+.mk-group .mk-btn.on.mk-verified { background: rgba(63,185,80,.16); color: var(--green); }
+.mk-group .mk-btn.on.mk-failing { background: rgba(248,81,73,.14); color: var(--red); }
+.mk-btn:focus-visible, .st-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.mk-who { color: var(--faint); }
+.mk-note { flex-basis: 100%; border-left: 2px solid var(--red); padding: 4px 10px; color: #ffb3ad; background: rgba(248,81,73,.06); border-radius: 0 6px 6px 0; white-space: pre-wrap; }
+.res-mark { margin-left: auto; display: inline-flex; gap: 6px; align-items: center; }
+.res-mark .mk-btn { padding: 3px 10px; font-size: 12px; display: inline-flex; gap: 5px; align-items: center; }
+.res-mark .mk-btn.mk-verified { color: var(--green); border-color: rgba(63,185,80,.4); }
+.res-mark .mk-btn.mk-failing { color: var(--red); border-color: rgba(248,81,73,.4); }
+.res-mark .mk-done { font-size: 12px; font-weight: 600; }
+
 /* merge conflicts */
 .conflict { border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px; margin-bottom: 10px; }
 .conflict-head { margin-bottom: 8px; }

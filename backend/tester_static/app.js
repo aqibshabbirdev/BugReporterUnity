@@ -76,7 +76,10 @@
     mode: ls.get('mode', 'server'),
     verifyTls: ls.get('verifyTls', '1') === '1',
     local: [],             // pm.variables for this page session
-    results: new Map()     // item id -> last {res | error, scripts}
+    results: new Map(),    // item id -> last {res | error, scripts}
+    marks: {},             // item id -> {status: verified|failing, note, responseCode, markedBy, markedAt}; absent = pending
+    statusFilter: ls.get('statusFilter', 'all'),
+    markSaving: 0
   });
 
   T.markDirty = function () {
@@ -153,6 +156,7 @@
       h('div.side-tools', {}, R.filter,
         h('button', { title: 'New request', text: '+ Request', onclick: () => T.addItem(M.newRequest(), T.targetFolder()) }),
         h('button', { title: 'New folder', text: '+ Folder', onclick: () => T.addItem(M.newFolder(), T.targetFolder()) })),
+      R.statusBar = h('div.status-bar', { role: 'group', 'aria-label': 'Show requests by test status' }),
       R.tree);
     R.editor = h('section.editor');
     R.response = h('section.response');
@@ -210,7 +214,8 @@
   const modalOpen = () => document.getElementById('overlay').childElementCount > 0;
 
   T.openColl = async function (id) {
-    const doc = await T.api('GET', '/api/tester/collections/' + id);
+    const [doc, marks] = await Promise.all([T.api('GET', '/api/tester/collections/' + id), T.api('GET', `/api/tester/collections/${id}/marks`)]);
+    S.marks = marks || {};
     M.ensureIds(doc.data.item);
     S.coll = doc; S.base = M.clone(doc.data); S.dirty = false; S.sel = null; S.open = new Set(); S.remote = null;
     ls.set('coll', id);
@@ -374,6 +379,13 @@
           else if (!S.remote || S.remote.version !== cur.version) { S.remote = cur; T.renderBanner(); }
         }
       }
+      if (S.coll && !S.markSaving) {
+        const id = S.coll.id;
+        const marks = await T.api('GET', `/api/tester/collections/${id}/marks`);
+        if (S.coll && S.coll.id === id && !S.markSaving && M.stable(marks) !== M.stable(S.marks)) {
+          S.marks = marks; T.renderTree(); T.renderMarkBar();
+        }
+      }
       if (S.env && !S.envDirty && !S.envSaving && !modalOpen()) {
         const cur = envs.find((e) => e.id === S.env.id);
         if (cur && cur.version > S.env.version) {
@@ -436,11 +448,119 @@
     T.markDirty(); T.renderTree(); T.renderEditor(); T.renderResponse();
   };
 
+  /* ── test marks ────────────────────────────────────────────────────────── */
+
+  // A request is pending until a tester marks it; marks live on the server, outside the collection.
+  const MARKS = {
+    pending: { label: 'Pending', icon: '○' },
+    verified: { label: 'Tested & verified', short: 'Verified', icon: '✓' },
+    failing: { label: 'Not working as expected', short: 'Not working', icon: '✕' }
+  };
+  const statusOf = (it) => (S.marks[it.id] && MARKS[S.marks[it.id].status] ? S.marks[it.id].status : 'pending');
+  T.statusOf = statusOf;
+
+  function ago(ts) {
+    const s = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.floor(s / 60) + ' min ago';
+    if (s < 86400) return Math.floor(s / 3600) + ' h ago';
+    return new Date(ts * 1000).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' });
+  }
+
+  function markTitle(it) {
+    const m = S.marks[it.id];
+    if (!m || !MARKS[m.status]) return 'Pending — not tested yet';
+    return `${MARKS[m.status].label} · ${m.markedBy} · ${ago(m.markedAt)}${m.responseCode ? ' · HTTP ' + m.responseCode : ''}${m.note ? '\n' + m.note : ''}`;
+  }
+
+  /** Set a request's mark for everyone. Shows at once; reverts if the server refuses. */
+  T.setMark = async function (it, status, note) {
+    if (!S.coll || !it || M.isFolder(it)) return;
+    const collId = S.coll.id, prev = S.marks[it.id];
+    const last = S.results.get(it.id);
+    const responseCode = last && last.res ? last.res.status : null;
+    const optimistic = status === 'pending' ? undefined : { status, note: note || '', responseCode, markedBy: S.me.email, markedAt: Math.floor(Date.now() / 1000) };
+    const apply = (m) => { if (m) S.marks[it.id] = m; else delete S.marks[it.id]; T.renderTree(); T.renderMarkBar(); T.renderResponse(); };
+    apply(optimistic);
+    S.markSaving++;
+    try {
+      const r = await T.api('PUT', `/api/tester/collections/${collId}/marks/${encodeURIComponent(it.id)}`, { status, note: note || '', responseCode });
+      if (S.coll && S.coll.id === collId) apply(r.status === 'pending' ? undefined : r);
+    } catch (e) {
+      if (S.coll && S.coll.id === collId) apply(prev);
+      T.toast('Could not save the mark: ' + e.message, 'error');
+    } finally {
+      S.markSaving--;
+    }
+  };
+
+  /** "Not working" asks what went wrong, so whoever fixes it knows where to look. */
+  T.markFailing = function (it) {
+    const m = S.marks[it.id];
+    const last = S.results.get(it.id);
+    const note = h('textarea', { id: 'mark-note', rows: 4, style: 'width:100%', placeholder: 'What went wrong? e.g. 500 when oldpassword is wrong, expected 400', value: m && m.status === 'failing' ? m.note : '' });
+    T.modal(`Not working: ${it.name}`, h('div', {},
+      h('label', { for: 'mark-note', class: 'section-title', style: 'display:block;margin-top:0', text: 'Note (optional)' }), note,
+      h('p.hint', { text: last && last.res ? `Last response here: HTTP ${last.res.status} — saved with the mark.` : 'No response on this page yet; send the request first to save its status code with the mark.' })), [
+      { label: 'Cancel', run: (close) => close() },
+      { label: '✕ Mark not working', kind: 'danger', run: (close) => { close(); T.setMark(it, 'failing', note.value.trim()); } }
+    ]);
+    setTimeout(() => note.focus(), 0);
+  };
+
+  /** Verdict controls under the URL bar of the open request. */
+  T.renderMarkBar = function () {
+    if (!R.markBar) return;
+    const it = S.sel;
+    if (!S.coll || !it || M.isFolder(it)) { R.markBar.replaceChildren(); return; }
+    const status = statusOf(it), m = S.marks[it.id];
+    const btn = (key, run) => h('button', {
+      class: 'mk-btn mk-' + key + (status === key ? ' on' : ''), 'aria-pressed': status === key ? 'true' : 'false',
+      title: MARKS[key].label, onclick: run
+    }, h('span.mk-ico', { text: MARKS[key].icon }), MARKS[key].short || MARKS[key].label);
+    const parts = [
+      h('div.mk-group', { role: 'group', 'aria-label': 'Test status' },
+        btn('pending', () => status !== 'pending' && T.setMark(it, 'pending')),
+        btn('verified', () => status !== 'verified' && T.setMark(it, 'verified')),
+        btn('failing', () => T.markFailing(it)))
+    ];
+    parts.push(h('span.mk-who', { text: m && MARKS[m.status] ? `${m.markedBy} · ${ago(m.markedAt)}${m.responseCode ? ' · HTTP ' + m.responseCode : ''}` : 'Not tested yet' }));
+    R.markBar.replaceChildren(...parts);
+    if (m && m.status === 'failing' && m.note) R.markBar.append(h('div.mk-note', { text: m.note }));
+  };
+
+  const filtering = () => !!S.filter || S.statusFilter !== 'all';
+
   const matches = (it) => {
+    if (M.isFolder(it)) {
+      if (!filtering()) return true;
+      if (S.statusFilter === 'all' && it.name.toLowerCase().includes(S.filter)) return true;
+      return it.item.some(matches);
+    }
+    if (S.statusFilter !== 'all' && statusOf(it) !== S.statusFilter) return false;
     if (!S.filter) return true;
-    if (M.isFolder(it)) return it.name.toLowerCase().includes(S.filter) || it.item.some(matches);
     return it.name.toLowerCase().includes(S.filter) || M.urlRaw(M.req(it)).toLowerCase().includes(S.filter);
   };
+
+  function tally(items) {
+    const t = { total: 0, pending: 0, verified: 0, failing: 0 };
+    M.walk(items, (it) => { if (!M.isFolder(it)) { t.total++; t[statusOf(it)]++; } });
+    return t;
+  }
+
+  function renderStatusBar() {
+    if (!R.statusBar) return;
+    if (!S.coll) { R.statusBar.replaceChildren(); return; }
+    const t = tally(S.coll.data.item);
+    const chip = (key, label, n) => h('button', {
+      class: 'st-chip st-' + key + (S.statusFilter === key ? ' on' : ''), 'aria-pressed': S.statusFilter === key ? 'true' : 'false',
+      title: key === 'all' ? 'Show every request' : 'Show only: ' + (MARKS[key] ? MARKS[key].label : label),
+      onclick: () => { S.statusFilter = key; ls.set('statusFilter', key); T.renderTree(); }
+    }, key !== 'all' ? h('span.mk-ico', { text: MARKS[key].icon }) : '', label, h('span.n', { text: n }));
+    R.statusBar.replaceChildren(
+      chip('all', 'All', t.total), chip('pending', 'Pending', t.pending),
+      chip('verified', 'Verified', t.verified), chip('failing', 'Not working', t.failing));
+  }
 
   function highlight(text) {
     if (!S.filter) return text;
@@ -456,6 +576,7 @@
         h('p', { text: 'No collection open.' }),
         h('button.primary', { text: 'Import Postman collection', onclick: () => T.importFile() }),
         h('p', {}, h('a', { href: '#', text: 'or start an empty one', onclick: (e) => { e.preventDefault(); T.newCollection(); } }))));
+      renderStatusBar();
       return;
     }
     const frag = document.createDocumentFragment();
@@ -465,24 +586,30 @@
         const pad = `padding-left:${8 + depth * 14}px`;
         const more = h('button.ghost.more', { text: '⋯', title: 'Actions', onclick: (ev) => { ev.stopPropagation(); T.itemMenu(ev.currentTarget, it); } });
         if (M.isFolder(it)) {
-          const open = S.open.has(it.id) || !!S.filter;
+          const open = S.open.has(it.id) || filtering();
+          const t = tally(it.item);
           frag.append(h('div.row', {
             class: S.sel === it ? 'sel' : '', style: pad,
             onclick: () => { if (S.open.has(it.id) && S.sel === it) S.open.delete(it.id); else S.open.add(it.id); S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
-          }, h('span.caret', { text: open ? '▾' : '▸' }), h('span.label', {}, highlight(it.name)), h('span.count', { text: M.countRequests(it.item) }), more));
+          }, h('span.caret', { text: open ? '▾' : '▸' }), h('span.label', {}, highlight(it.name)),
+            h('span.count', { title: `${t.verified} verified · ${t.failing} not working · ${t.pending} pending` },
+              t.failing ? h('span.c-bad', { text: '✕' + t.failing + ' ' }) : '',
+              t.verified ? h('span.c-ok', { text: t.verified }) : '', t.verified ? '/' : '', String(t.total)), more));
           if (open) draw(it.item, depth + 1);
         } else {
           const method = (M.req(it).method || 'GET').toUpperCase();
           frag.append(h('div.row', {
             class: S.sel === it ? 'sel' : '', style: pad, title: M.urlRaw(M.req(it)),
             onclick: () => { S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
-          }, h('span.meth', { class: 'm-' + method, text: method.slice(0, 6) }), h('span.label', {}, highlight(it.name)), more));
+          }, h('span.meth', { class: 'm-' + method, text: method.slice(0, 6) }), h('span.label', {}, highlight(it.name)),
+            h('span.mk', { class: 'mk-' + statusOf(it), title: markTitle(it), 'aria-label': MARKS[statusOf(it)].label, text: MARKS[statusOf(it)].icon }), more));
         }
       }
     };
     draw(S.coll.data.item, 0);
-    if (!frag.childNodes.length) frag.append(h('div.empty-tree', { text: S.filter ? 'Nothing matches.' : 'Empty collection — add a request.' }));
+    if (!frag.childNodes.length) frag.append(h('div.empty-tree', { text: filtering() ? 'Nothing matches.' : 'Empty collection — add a request.' }));
     R.tree.replaceChildren(frag);
+    renderStatusBar();
   };
 
   /* ── menus ─────────────────────────────────────────────────────────────── */
@@ -603,6 +730,7 @@
     const tlsBox = h('input', { type: 'checkbox', checked: S.verifyTls, onchange: () => { S.verifyTls = tlsBox.checked; ls.set('verifyTls', S.verifyTls ? '1' : '0'); } });
     const tls = h('label', { style: S.mode === 'server' ? '' : 'display:none', title: 'Untick for self-signed certificates' }, tlsBox, 'Verify TLS');
     R.varWarn = h('span.warn');
+    R.markBar = h('div.markbar');
 
     R.tabs = h('div.tabs');
     R.tabBody = h('div');
@@ -610,9 +738,11 @@
       h('div.ed-head', {}, name, crumbs),
       h('div.ed-bar', {}, method, url, sendBtn),
       h('div.ed-sub', {}, mode, tls, R.varWarn),
+      R.markBar,
       R.tabs, R.tabBody
     );
     renderVarWarning();
+    T.renderMarkBar();
     renderTabs();
     renderTab();
   };
@@ -622,7 +752,7 @@
     if (!['auth', 'scripts'].includes(S.tab)) S.tab = 'auth';
     R.editor.replaceChildren(
       h('div.ed-head', {}, h('span', { text: '📁' }), name, crumbs),
-      h('p.hint', { text: `${M.countRequests(it.item)} requests. Auth and scripts set here apply to every request inside that doesn't set its own.` }),
+      h('p.hint', { text: (() => { const t = tally(it.item); return `${t.total} requests — ${t.verified} verified, ${t.failing} not working, ${t.pending} pending. Auth and scripts set here apply to every request inside that doesn't set its own.`; })() }),
       h('div.inline', {},
         h('button', { text: '+ Request here', onclick: () => T.addItem(M.newRequest(), it) }),
         h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) })),

@@ -167,6 +167,17 @@ _SCHEMA = [
         updated_by VARCHAR(190) NOT NULL DEFAULT '',
         KEY idx_tester_docs_kind (kind, name)
     ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # A tester's verdict on one request of a collection. No row = pending.
+    """CREATE TABLE IF NOT EXISTS tester_marks (
+        collection_id VARCHAR(32) NOT NULL,
+        item_id       VARCHAR(64) NOT NULL,
+        status        VARCHAR(16) NOT NULL,
+        note          TEXT NOT NULL,
+        response_code INT NULL,
+        marked_by     VARCHAR(190) NOT NULL,
+        marked_at     BIGINT NOT NULL,
+        PRIMARY KEY (collection_id, item_id)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
 ]
 
 
