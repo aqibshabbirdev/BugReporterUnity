@@ -306,7 +306,7 @@
     if (!code || !code.trim()) return { logs, tests, error: null };
     const fmt = (args) => args.map((a) => (typeof a === 'string' ? a : (() => { try { return JSON.stringify(a); } catch (e) { return String(a); } })())).join(' ');
     const con = { log: (...a) => logs.push(fmt(a)), info: (...a) => logs.push(fmt(a)), warn: (...a) => logs.push('warn: ' + fmt(a)), error: (...a) => logs.push('error: ' + fmt(a)) };
-    const vars = { get: (k) => [ctx.local, ctx.env, ctx.coll].reduce((v, s) => (v !== undefined ? v : s.get(k)), undefined), set: ctx.local.set, has: (k) => ctx.local.has(k) || ctx.env.has(k) || ctx.coll.has(k), replaceIn: (s) => M.resolve(s, [ctx.local, ctx.env, ctx.coll]) };
+    const vars = { get: (k) => [ctx.local, ctx.env, ctx.coll].reduce((v, s) => (v !== undefined ? v : s.get(k)), undefined), set: ctx.local.set, unset: ctx.local.unset, has: (k) => ctx.local.has(k) || ctx.env.has(k) || ctx.coll.has(k), replaceIn: (s) => M.resolve(s, [ctx.local, ctx.env, ctx.coll]) };
 
     const pm = {
       environment: ctx.env, globals: ctx.env, collectionVariables: ctx.coll, variables: vars,

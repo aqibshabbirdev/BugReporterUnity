@@ -35,9 +35,13 @@
     };
   }
 
-  T.send = async function () {
-    const it = S.sel;
-    if (!it || M.isFolder(it) || S.sending) return;
+  /**
+   * Run one request end to end — pre-request scripts, variables, send, test scripts — and store the
+   * result in S.results. Shared by the Send button and the folder runner.
+   * opts.skipEmpty: don't send when a variable in the URL or Authorization header is empty — the runner
+   * uses it so "not logged in yet" is reported as skipped, not as a broken API.
+   */
+  T.execute = async function (it, opts) {
     const coll = S.coll.data;
     const parents = M.parentsOf(coll.item, it) || [];
     const env = T.envStore(), collVars = T.collStore(), local = T.localStore();
@@ -48,12 +52,7 @@
       r.tests.forEach((x) => out.tests.push(x));
       if (r.error) out.errors.push(`${phase} script (${from}): ${r.error}`);
     };
-
-    S.sending = true;
-    S.results.set(it.id, { pending: true });
-    T.renderResponse();
-    R.sendBtn && (R.sendBtn.disabled = true);
-
+    let result;
     try {
       const template = M.build(it, parents, coll);
       for (const s of M.scriptsFor(it, parents, coll, 'prerequest')) {
@@ -64,6 +63,16 @@
       if (missing.size) {
         throw Object.assign(new Error(`These variables have no value: ${[...missing].map((k) => '{{' + k + '}}').join(', ')}\nSet them under "Variables" (or pick the right environment) and send again.`), { missing: [...missing] });
       }
+      if (opts && opts.skipEmpty) {
+        const used = new Set(M.varsIn(template.url));
+        template.headers.forEach(([k, v]) => { if (/^authorization$/i.test(k)) M.varsIn(v).forEach((x) => used.add(x)); });
+        const empty = [...used].filter((k) => { const sc = scopes.find((x) => x.has(k)); return sc && String(sc.get(k) == null ? '' : sc.get(k)).trim() === ''; });
+        if (empty.length) {
+          result = { skipped: `empty ${empty.map((k) => '{{' + k + '}}').join(', ')} — run the login request first or fill it in Variables`, out };
+          S.results.set(it.id, result);
+          return result;
+        }
+      }
 
       let res;
       if (S.mode === 'browser') res = await sendFromBrowser(final);
@@ -72,7 +81,7 @@
           res = await T.api('POST', '/api/tester/send', Object.assign({}, final, { verifyTls: S.verifyTls }));
           res.via = 'server';
         } catch (e) {
-          if (e.status === 401) { location.reload(); return; }
+          if (e.status === 401) { location.reload(); return null; }
           throw e;
         }
       }
@@ -80,15 +89,195 @@
       for (const s of M.scriptsFor(it, parents, coll, 'test')) {
         absorb(M.runScript(s.code, { env, coll: collVars, local, response: res, name: it.name }), s.from, 'post-response');
       }
-      S.results.set(it.id, { res, sent: final, out });
+      result = { res, sent: final, out };
     } catch (e) {
-      S.results.set(it.id, { error: e.message, missing: e.missing, out });
+      result = { error: e.message, missing: e.missing, out };
+    }
+    S.results.set(it.id, result);
+    return result;
+  };
+
+  T.send = async function () {
+    const it = S.sel;
+    if (!it || M.isFolder(it) || S.sending) return;
+    S.sending = true;
+    S.results.set(it.id, { pending: true });
+    T.renderResponse();
+    R.sendBtn && (R.sendBtn.disabled = true);
+    try {
+      await T.execute(it);
     } finally {
       S.sending = false;
       if (R.sendBtn) R.sendBtn.disabled = false;
       if (S.sel === it) { T.renderResponse(); T.renderVarWarning(); }
       if (S.envDirty) T.saveEnv(true);   // scripts setting {{token}} should stick for the next request
     }
+  };
+
+  /* ── folder runner ─────────────────────────────────────────────────────── */
+
+  // Requests the runner leaves unticked until someone ticks them: they spend coins, delete things, start a
+  // game, change an account or send an OTP. `get` is the stricter pattern for reads (GET, or a POST that
+  // only lists/looks up — CardGames uses POST for everything), where "purchase history" is harmless.
+  const RISK = [
+    { why: 'spends or moves coins',
+      any: /withdraw|redeem|purchase|puchase|payment|recharge|add_?cash|order|gift|golds?\b|silvers?\b|in-app|transfer|\bbet\b|bet_|place_bet|\bspin|payout|claim|collect|settle|win-loss|winner|double|repeat|book|participate|generate-session|coin-payment/i,
+      get: /claim|settle|win-loss|session-winner|make_winner|generate-session|coin-payment|\bspin\b/i },
+    { why: 'deletes or cancels something',
+      any: /delete|remove|destroy|logout|leave|ignore|reject|cancel|clear/i,
+      get: /delete|remove|destroy|logout|leave|ignore|reject|cancel|clear/i },
+    { why: 'starts a game or session',
+      any: /create|join|\bplay\b|\bround\b|rematch|re-match|start|private_table|table_with_code/i,
+      get: /create|\bjoin\b|\bplay\b|\bround\b|rematch|re-match/i },
+    { why: 'changes an account',
+      any: /password|kyc|adhar|bank|crypto|register|signup|update|edit|fcm|upload|proof/i,
+      get: null },
+    { why: 'sends a message or OTP',
+      any: /otp|sms|notify|send|ticket|conversation|accept|request\b/i,
+      get: /otp|notify/i }
+  ];
+  const LOOKUP = /history|statement|_log\b|log$|\blist\b|table_master|\/get|details?\b|\bstatus\b|agent_chats|\bwallet$|\/profile$|\/setting$|\/plan$|paymentmethod|currencyavailable|game_on_off|types$|info$|winners|\/welcome_bonus$|reffer_level/i;
+
+  T.riskOf = function (it) {
+    const req = M.req(it);
+    const url = M.urlRaw(req);
+    const text = `${it.name} ${url}`;
+    if (/\/login(\/|\b)|build-token/i.test(url)) return '';      // later requests need its token
+    const method = (req.method || 'GET').toUpperCase();
+    const read = method === 'GET' || method === 'HEAD' || (method !== 'DELETE' && LOOKUP.test(text));
+    for (const r of RISK) {
+      const re = read ? r.get : r.any;
+      if (re && re.test(text)) return r.why;
+    }
+    return read ? '' : 'changes data';
+  };
+
+  /** Was the response what a working API returns? {verdict: pass | fail | skip, reason} */
+  T.judge = function (r) {
+    if (!r) return { verdict: 'skip', reason: 'not run' };
+    if (r.skipped) return { verdict: 'skip', reason: r.skipped };
+    if (r.missing && r.missing.length) return { verdict: 'skip', reason: 'needs ' + r.missing.map((k) => '{{' + k + '}}').join(', ') };
+    if (r.error) return { verdict: 'fail', reason: r.error.split('\n')[0] };
+    const out = r.out || { tests: [], errors: [] };
+    if (out.errors.length) return { verdict: 'fail', reason: out.errors[0] };
+    const res = r.res;
+    let body = null;
+    try { body = JSON.parse(res.body); } catch (e) { /* not JSON */ }
+    const msg = body && typeof body === 'object' && typeof body.message === 'string' ? ': ' + body.message.slice(0, 120) : '';
+    const failed = out.tests.filter((t) => !t.ok);
+    if (out.tests.length) {
+      return failed.length
+        ? { verdict: 'fail', reason: `HTTP ${res.status}, test "${failed[0].name}" failed${failed[0].error ? ' — ' + failed[0].error : ''}` }
+        : { verdict: 'pass', reason: `HTTP ${res.status}, ${out.tests.length} test${out.tests.length === 1 ? '' : 's'} passed` };
+    }
+    if (res.status < 200 || res.status >= 300) return { verdict: 'fail', reason: `HTTP ${res.status}${msg}` };
+    // CardGames (PHP/Node) always answer HTTP 200 and put the real outcome in the body.
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const code = Number(body.code);
+      if (body.code !== undefined && Number.isFinite(code) && code !== 200 && code !== 201) return { verdict: 'fail', reason: `HTTP ${res.status} but body code ${body.code}${msg}` };
+      if (body.status === false || body.success === false) return { verdict: 'fail', reason: `HTTP ${res.status} but body status false${msg}` };
+    }
+    return { verdict: 'pass', reason: `HTTP ${res.status}` };
+  };
+
+  T.runDialog = function (folder) {
+    if (!S.coll) return;
+    const items = [];
+    M.walk(folder ? folder.item : S.coll.data.item, (it) => { if (!M.isFolder(it)) items.push(it); });
+    if (!items.length) return T.toast('No requests in here', 'error');
+    const title = folder ? folder.name : (S.coll.data.info && S.coll.data.info.name) || S.coll.name;
+    const rows = items.map((it) => ({ it, risk: T.riskOf(it), state: 'queued', reason: '' }));
+    // A "Flows" folder is a scripted scenario (log in, stake, settle, check balances): every step belongs,
+    // in order, and a failed step makes the rest meaningless.
+    const isFlow = /\bflows?\b/i.test(title) || (folder && (M.parentsOf(S.coll.data.item, folder) || []).some((p) => /\bflows?\b/i.test(p.name)));
+    rows.forEach((r) => { r.on = isFlow || !r.risk; });
+    let phase = 'setup', stop = false, failedStop = false;
+
+    const body = h('div.runner');
+    const autoMark = h('input', { type: 'checkbox', id: 'run-automark', checked: true });
+    const stopOnFail = h('input', { type: 'checkbox', id: 'run-stopfail', checked: !!isFlow });
+    const delay = h('input', { type: 'number', id: 'run-delay', min: 0, max: 10000, step: 100, value: 300, style: 'width:90px' });
+    const startBtn = h('button.primary', { text: '▶ Start' });
+    const stopBtn = h('button', { text: 'Stop', hidden: true });
+
+    const icon = { queued: '·', running: '…', pass: '✓', fail: '✕', skip: '–', stopped: '·' };
+    const draw = () => {
+      const chosen = rows.filter((r) => r.on);
+      const done = rows.filter((r) => ['pass', 'fail', 'skip'].includes(r.state));
+      const count = (st) => rows.filter((r) => r.state === st).length;
+      const head = phase === 'setup'
+        ? h('div.run-head', {},
+          h('div', {}, h('b', { text: `${chosen.length} of ${rows.length} requests selected` }),
+            h('span.hint', { text: isFlow ? ' · flow: every step runs in order, including ones that move coins — use test accounts' : ` · ${rows.filter((r) => r.risk).length} left unticked because they spend coins, delete, change an account or send an SMS` })),
+          h('div.inline', {},
+            h('button.ghost', { text: 'Select all', onclick: () => { rows.forEach((r) => { r.on = true; }); draw(); } }),
+            h('button.ghost', { text: 'Safe only', onclick: () => { rows.forEach((r) => { r.on = !r.risk; }); draw(); } }),
+            h('button.ghost', { text: 'None', onclick: () => { rows.forEach((r) => { r.on = false; }); draw(); } })),
+          h('div.inline', {},
+            h('label', { for: 'run-automark', class: 'inline' }, autoMark, 'Mark results ✓ / ✕ automatically'),
+            h('label', { for: 'run-stopfail', class: 'inline' }, stopOnFail, 'Stop at the first failure'),
+            h('label', { for: 'run-delay', class: 'inline' }, 'Pause', delay, 'ms between requests')))
+        : h('div.run-head', {},
+          h('div.run-progress', {}, h('span', { style: `width:${chosen.length ? Math.round(done.length / chosen.length * 100) : 0}%` })),
+          h('div', {}, h('b', { text: phase === 'done' ? (failedStop ? 'Stopped at the first failure' : stop ? 'Stopped' : 'Finished') : `Running ${done.length + 1} of ${chosen.length}` }),
+            h('span.run-sum', {}, h('span.mk-verified', { text: ` ✓ ${count('pass')}` }), h('span.mk-failing', { text: `  ✕ ${count('fail')}` }), h('span.faint', { text: `  – ${count('skip')} skipped` }))),
+          phase === 'done' ? h('p.hint', { text: 'Click a row to open that request and its response.' }) : '');
+      const list = h('div.run-list', {}, rows.map((r) => {
+        const method = (M.req(r.it).method || 'GET').toUpperCase();
+        const parents = (M.parentsOf(S.coll.data.item, r.it) || []).slice(folder ? (M.parentsOf(S.coll.data.item, folder) || []).length + 1 : 0);
+        return h('div.run-row', {
+          class: `st-${r.state}${r.on ? '' : ' off'}`,
+          onclick: () => {
+            if (phase === 'setup') { r.on = !r.on; draw(); return; }
+            if (phase !== 'done') return;
+            close();
+            M.parentsOf(S.coll.data.item, r.it).forEach((p) => S.open.add(p.id));
+            S.sel = r.it; T.renderTree(); T.renderEditor(); T.renderResponse();
+          }
+        },
+          phase === 'setup' ? h('input', { type: 'checkbox', checked: r.on, tabindex: -1, 'aria-label': 'Include ' + r.it.name }) : h('span.run-ico', { text: r.on ? icon[r.state] : '' }),
+          h('span.meth', { class: 'm-' + method, text: method.slice(0, 6) }),
+          h('span.run-name', {}, r.it.name, parents.length ? h('span.faint', { text: '  ' + parents.map((p) => p.name).join(' › ') }) : ''),
+          h('span.run-why', { text: phase === 'setup' ? (r.risk ? '⚠ ' + r.risk : '') : (r.on ? r.reason : 'not selected'), title: r.reason || r.risk || '' }));
+      }));
+      body.replaceChildren(head, list);
+      startBtn.hidden = phase !== 'setup';
+      stopBtn.hidden = phase !== 'running';
+    };
+
+    const close = T.modal(`Run: ${title}`, body, [
+      { label: 'Close', run: (c) => c() }
+    ], () => { stop = true; });
+    const footer = document.querySelector('#overlay .modal footer');
+    footer.prepend(stopBtn, startBtn);
+
+    stopBtn.onclick = () => { stop = true; stopBtn.disabled = true; };
+    startBtn.onclick = async () => {
+      const chosen = rows.filter((r) => r.on);
+      if (!chosen.length) return T.toast('Tick at least one request', 'error');
+      if (S.sending) return T.toast('A request is still sending — wait a moment', 'error');
+      const mark = autoMark.checked, haltOnFail = stopOnFail.checked, pause = Math.max(0, Math.min(10000, Number(delay.value) || 0));
+      phase = 'running'; S.sending = true; draw();
+      try {
+        for (const r of chosen) {
+          if (stop) break;
+          r.state = 'running'; draw();
+          const result = await T.execute(r.it, { skipEmpty: true });
+          const j = T.judge(result);
+          r.state = j.verdict; r.reason = j.reason;
+          if (mark && j.verdict !== 'skip') await T.setMark(r.it, j.verdict === 'pass' ? 'verified' : 'failing', j.verdict === 'fail' ? 'Auto run: ' + j.reason : '', { quiet: true });
+          if (S.envDirty) await T.saveEnv(true);
+          if (haltOnFail && j.verdict === 'fail') { stop = true; failedStop = true; }
+          draw();
+          if (pause && !stop) await new Promise((res) => setTimeout(res, pause));
+        }
+      } finally {
+        S.sending = false;
+        phase = 'done'; draw();
+        T.renderTree(); T.renderMarkBar(); T.renderResponse();
+      }
+    };
+    draw();
   };
 
   /* ── response ──────────────────────────────────────────────────────────── */
@@ -133,6 +322,7 @@
       return;
     }
     if (r.pending) { R.response.replaceChildren(h('div.idle', {}, h('span.spinner'), ' Sending…')); return; }
+    if (r.skipped) { R.response.replaceChildren(h('div.idle', {}, 'Not sent by the runner: ' + r.skipped)); return; }
 
     const parts = [];
     const out = r.out || { logs: [], tests: [], errors: [] };
@@ -291,6 +481,7 @@
     if (S.coll) {
       entries.push(
         { label: 'Rename collection', run: () => { const n = prompt('Collection name', S.coll.data.info.name); if (n && n.trim()) { S.coll.data.info.name = n.trim(); T.markDirty(); T.saveColl(); } } },
+        { label: '▶ Run whole collection…', run: () => T.runDialog(null) },
         { label: 'Find & replace in URLs…', run: () => replaceDialog() },
         { label: 'Export (Postman v2.1)', run: () => download(`${S.coll.data.info.name}.postman_collection.json`, S.coll.data) },
         '-', { label: 'Reload from server', run: async () => { if (!S.dirty || confirm('Discard unsaved changes?')) await T.openColl(S.coll.id); } });

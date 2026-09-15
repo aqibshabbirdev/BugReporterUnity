@@ -474,13 +474,14 @@
   }
 
   /** Set a request's mark for everyone. Shows at once; reverts if the server refuses. */
-  T.setMark = async function (it, status, note) {
+  T.setMark = async function (it, status, note, opts) {
     if (!S.coll || !it || M.isFolder(it)) return;
     const collId = S.coll.id, prev = S.marks[it.id];
     const last = S.results.get(it.id);
     const responseCode = last && last.res ? last.res.status : null;
     const optimistic = status === 'pending' ? undefined : { status, note: note || '', responseCode, markedBy: S.me.email, markedAt: Math.floor(Date.now() / 1000) };
-    const apply = (m) => { if (m) S.marks[it.id] = m; else delete S.marks[it.id]; T.renderTree(); T.renderMarkBar(); T.renderResponse(); };
+    const quiet = opts && opts.quiet;      // the folder runner redraws once at the end
+    const apply = (m) => { if (m) S.marks[it.id] = m; else delete S.marks[it.id]; if (!quiet) { T.renderTree(); T.renderMarkBar(); T.renderResponse(); } };
     apply(optimistic);
     S.markSaving++;
     try {
@@ -631,6 +632,7 @@
     if (M.isFolder(it)) {
       entries.push({ label: 'New request here', run: () => T.addItem(M.newRequest(), it) });
       entries.push({ label: 'New folder here', run: () => T.addItem(M.newFolder(), it) });
+      entries.push({ label: '▶ Run folder…', run: () => T.runDialog(it) });
       entries.push('-');
     }
     entries.push({ label: 'Rename', run: () => { const n = prompt('Name', it.name); if (n && n.trim()) { it.name = n.trim(); T.markDirty(); T.renderTree(); T.renderEditor(); } } });
@@ -755,7 +757,8 @@
       h('p.hint', { text: (() => { const t = tally(it.item); return `${t.total} requests — ${t.verified} verified, ${t.failing} not working, ${t.pending} pending. Auth and scripts set here apply to every request inside that doesn't set its own.`; })() }),
       h('div.inline', {},
         h('button', { text: '+ Request here', onclick: () => T.addItem(M.newRequest(), it) }),
-        h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) })),
+        h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) }),
+        h('button.primary', { text: '▶ Run folder', title: 'Send every request in this folder in order and mark the results', onclick: () => T.runDialog(it) })),
       R.tabs, R.tabBody
     );
     renderTabs(); renderTab();

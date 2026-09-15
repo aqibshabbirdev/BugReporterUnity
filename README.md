@@ -305,6 +305,18 @@ A small Postman-style page for the team's API collections, on the same app and s
   mark saves at once, never bumps the version and never needs a merge. The tree shows each request's mark and
   per-folder counts, the sidebar filters by status, and the 12s poll picks up teammates' marks. Each mark keeps
   who, when and the HTTP status of the last response on that page.
+- **Runner:** "▶ Run folder" (folder page or its ⋯ menu; "Run whole collection" in the collection menu) sends a
+  folder's requests in tree order with their scripts, so a login request early in the folder fills the token
+  for the rest. Requests that spend coins, delete, start a game, change an account or send an OTP start
+  unticked (`T.riskOf` in `panels.js`, name + URL patterns); logins are always ticked. Results are judged by
+  `T.judge`: the request's own `pm.test`s if it has any, otherwise HTTP 2xx and — for CardGames, which always
+  answers 200 — a body `code` of 200 and no `status: false`. Pass → ✓, fail → ✕ with an "Auto run: …" note;
+  a request whose URL or Authorization header uses an empty variable is skipped, not marked.
+  A folder named "Flows" (or inside one) is a scripted scenario: every step is ticked and the run stops at the
+  first failure. The collection's "🧪 Flows — game money checks" folder logs in two test accounts, plays a
+  vs-AI loss + win (silver) and a multiplayer win/loss + draw (gold, settled through the game-server endpoints)
+  and asserts the balance after each result with `pm.test`. Run-time tokens and ids go in `pm.variables`
+  (this page only), so testers running at once don't collide.
 - **Page:** `index.html` + `model.js` (Postman document helpers, `{{variable}}` resolution, auth inheritance,
   a `pm.*` script sandbox covering pm.environment/collectionVariables/variables, pm.request.headers,
   pm.response, pm.test, pm.expect) + `app.js` (sign-in, tree, editor) + `panels.js` (send, response,
