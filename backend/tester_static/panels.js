@@ -196,6 +196,7 @@
     if (!r.on) return 'not selected';
     if (r.state === 'queued') return '';
     if (r.state === 'running') return 'sending…';
+    if (r.state === 'waiting') return 'waiting for your input';
     const tests = (r.result && r.result.out && r.result.out.tests) || [];
     const bad = tests.find((t) => !t.ok);
     const pick = bad || tests.find((t) => /→/.test(t.name)) || null;
@@ -268,7 +269,7 @@
       if (!g) groups.push((g = { key, name: trail.length ? trail[0].name : (folder ? folder.name : 'Requests'), rows: [] }));
       g.rows.push(r);
     });
-    const icon = { queued: '', running: '', pass: '✓', fail: '✕', skip: '–' };
+    const icon = { queued: '', running: '', waiting: '✎', pass: '✓', fail: '✕', skip: '–' };
     return h('div.fc', {}, groups.map((g) => {
       const on = g.rows.filter((r) => r.on);
       const n = (st) => on.filter((r) => r.state === st).length;
@@ -328,7 +329,27 @@
     const startBtn = h('button.primary', { text: isFlow ? '▶ Start test' : '🚀 Run all tests' });
     const stopBtn = h('button', { text: 'Stop', hidden: true });
 
-    const icon = { queued: '·', running: '…', pass: '✓', fail: '✕', skip: '–', stopped: '·' };
+    const icon = { queued: '·', running: '…', waiting: '✎', pass: '✓', fail: '✕', skip: '–', stopped: '·' };
+    // A step that needs a person (an OTP, a new password) pauses the run here until they answer.
+    let asking = null;
+    const askFor = (r, asks) => new Promise((resolve) => {
+      asking = { r, asks, resolve, values: asks.map((a) => { const v = T.localStore().get(a.var); return v == null ? '' : String(v); }) };
+      draw();
+      const first = body.querySelector('.run-ask input');
+      if (first) first.focus();
+    });
+    const askPanel = () => {
+      if (!asking) return '';
+      const a = asking;
+      return h('form.run-ask', { onsubmit: (ev) => { ev.preventDefault(); a.resolve(a.values.slice()); } },
+        h('div', {}, h('b', { text: `Step ${rows.indexOf(a.r) + 1} needs your input` }), h('span.hint', { text: '  ' + a.r.it.name })),
+        a.asks.map((q, i) => h('label.run-ask-field', { for: 'run-ask-' + i },
+          h('span', { text: q.label || `Value for {{${q.var}}}` }),
+          h('input', { id: 'run-ask-' + i, value: a.values[i], autocomplete: 'off', oninput: (ev) => { a.values[i] = ev.target.value; } }))),
+        h('div.inline', {},
+          h('button.primary', { type: 'submit', text: 'Continue ▶' }),
+          h('button', { type: 'button', text: 'Skip this step', onclick: () => a.resolve(null) })));
+    };
     const draw = () => {
       const chosen = rows.filter((r) => r.on);
       const done = rows.filter((r) => ['pass', 'fail', 'skip'].includes(r.state));
@@ -362,7 +383,7 @@
           onclick: () => { view = v; T.ls.set('runView', v); draw(); }
         }))) : '';
       if (view === 'chart') {
-        body.replaceChildren(head, toggle, flowChart(rows, phase, folder, (r) => {
+        body.replaceChildren(head, askPanel(), toggle, flowChart(rows, phase, folder, (r) => {
           if (phase === 'setup') { r.on = !r.on; draw(); } else if (phase === 'done') openRow(r);
         }));
         startBtn.hidden = phase !== 'setup';
@@ -387,19 +408,19 @@
           h('span.run-name', {}, r.it.name, parents.length ? h('span.faint', { text: '  ' + parents.map((p) => p.name).join(' › ') }) : ''),
           h('span.run-why', { text: phase === 'setup' ? (r.risk ? '⚠ ' + r.risk : '') : (r.on ? r.reason : 'not selected'), title: r.reason || r.risk || '' }));
       }));
-      body.replaceChildren(head, toggle, list);
+      body.replaceChildren(head, askPanel(), toggle, list);
       startBtn.hidden = phase !== 'setup';
       stopBtn.hidden = phase !== 'running';
     };
 
     const close = T.modal(isFlow ? `Flow test: ${title}` : `Run all tests: ${title}`, body, [
       { label: 'Close', run: (c) => c() }
-    ], () => { stop = true; });
+    ], () => { stop = true; if (asking) asking.resolve(null); });
     if (isFlow) document.querySelector('#overlay .modal').classList.add('wide');
     const footer = document.querySelector('#overlay .modal footer');
     footer.prepend(stopBtn, startBtn);
 
-    stopBtn.onclick = () => { stop = true; stopBtn.disabled = true; };
+    stopBtn.onclick = () => { stop = true; stopBtn.disabled = true; if (asking) asking.resolve(null); };
     startBtn.onclick = async () => {
       const chosen = rows.filter((r) => r.on);
       if (!chosen.length) return T.toast('Tick at least one request', 'error');
@@ -409,6 +430,18 @@
       try {
         for (const r of chosen) {
           if (stop) break;
+          const asks = T.stepAsks ? T.stepAsks(r.it) : [];
+          if (asks.length) {
+            r.state = 'waiting'; r.reason = 'waiting for your input';
+            const answers = await askFor(r, asks);
+            asking = null;
+            if (answers === null) {
+              if (stop) { r.state = 'queued'; r.reason = ''; break; }
+              r.state = 'skip'; r.reason = 'skipped — no input given'; draw();
+              continue;
+            }
+            answers.forEach((v, i) => T.localStore().set(asks[i].var, v));
+          }
           r.state = 'running'; draw();
           const result = await T.execute(r.it, { skipEmpty: true });
           r.result = result;

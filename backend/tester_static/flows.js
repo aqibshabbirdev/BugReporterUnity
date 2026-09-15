@@ -61,7 +61,7 @@
   function splitScript(code) {
     const lines = String(code || '').split('\n');
     const s = lines.indexOf(START), e = lines.indexOf(END);
-    let meta = { save: [], expect: [] };
+    let meta = { save: [], expect: [], rules: [], ask: [] };
     if (s < 0 || e < s) return { rest: String(code || ''), meta };
     const metaLine = lines.slice(s, e).find((l) => l.startsWith(META));
     try { meta = Object.assign(meta, JSON.parse(metaLine.slice(META.length))); } catch (err) { /* hand-edited — start clean */ }
@@ -69,22 +69,64 @@
     return { rest, meta };
   }
 
-  function builderBlock(save, expect) {
-    save = save.filter(([p, v]) => p.trim() && v.trim());
-    expect = expect.filter(([p]) => p.trim());
-    if (!save.length && !expect.length) return '';
+  /* ── validations (no code) ─────────────────────────────────────────────── */
+
+  // A rule reads one thing from the response and compares it. `@ok`, `@status` and `@time` are the response
+  // itself; anything else is a path into the JSON body (data.reset_token, user._id, items.0.name).
+  const OPS = {
+    is: { label: 'is', value: true },
+    not: { label: 'is not', value: true },
+    contains: { label: 'contains', value: true },
+    exists: { label: 'exists' },
+    missing: { label: 'is missing' },
+    true: { label: 'is true' },
+    false: { label: 'is false' },
+    notempty: { label: 'is not empty' },
+    empty: { label: 'is empty' },
+    gt: { label: 'is more than', value: true },
+    lt: { label: 'is less than', value: true },
+    ok2xx: { label: 'is 2xx (success)' }
+  };
+  const FIELD_LABEL = { '@ok': 'Response looks OK', '@status': 'HTTP status', '@time': 'Response time (ms)' };
+  const fieldLabel = (f) => FIELD_LABEL[f] || f;
+  T.ruleText = (r) => (r.field === '@ok' ? 'Response looks OK (HTTP 2xx, no "status": false)' : `${fieldLabel(r.field)} ${OPS[r.op] ? OPS[r.op].label : r.op}${OPS[r.op] && OPS[r.op].value ? ' ' + r.value : ''}`);
+
+  function ruleCode(r) {
     const js = JSON.stringify;
-    const out = [START, META + js({ save, expect }), '{',
+    if (r.field === '@ok') {
+      return "  pm.test('Response looks OK — HTTP ' + pm.response.code + (j && j.message ? ', ' + j.message : ''), () => { if (pm.response.code >= 300 || (j && (j.status === false || j.success === false))) throw new Error('the response says it failed'); });";
+    }
+    const cond = {
+      is: 'show(v) === want', not: 'show(v) !== want', contains: 'show(v).toLowerCase().includes(want.toLowerCase())',
+      exists: 'v !== undefined && v !== null', missing: 'v === undefined || v === null',
+      true: "v === true || v === 'true' || v === 1", false: "v === false || v === 'false' || v === 0",
+      notempty: '!isEmpty(v)', empty: 'isEmpty(v)', gt: 'Number(v) > Number(want)', lt: 'Number(v) < Number(want)',
+      ok2xx: 'Number(v) >= 200 && Number(v) < 300'
+    }[r.op] || 'false';
+    const label = fieldLabel(r.field) + ' ' + (OPS[r.op] ? OPS[r.op].label : r.op);
+    return `  { const v = get(${js(r.field)}); const want = pm.variables.replaceIn(${js(String(r.value == null ? '' : r.value))}); pm.test(${js(label)} + (${js(!!(OPS[r.op] && OPS[r.op].value))} ? ' ' + want : '') + ' — got ' + show(v), () => { if (!(${cond})) throw new Error('got ' + show(v)); }); }`;
+  }
+
+  function builderBlock(meta) {
+    const save = (meta.save || []).filter(([p, v]) => String(p).trim() && String(v).trim());
+    const rules = (meta.rules || []).filter((r) => r.field && (r.field === '@ok' || OPS[r.op]));
+    const ask = (meta.ask || []).filter((a) => String(a.var || '').trim());
+    if (!save.length && !rules.length && !ask.length) return '';
+    const js = JSON.stringify;
+    const out = [START, META + js({ save, rules, ask }), '{',
       '  let j = null; try { j = pm.response.json(); } catch (e) {}',
-      "  const get = (p) => String(p).split('.').filter(Boolean).reduce((o, k) => (o == null ? undefined : o[k]), j);",
-      "  pm.test('HTTP ' + pm.response.code + (j && j.message ? ' — ' + j.message : ''), () => { if (pm.response.code >= 300 || (j && (j.status === false || j.success === false))) throw new Error('the response says it failed'); });"];
+      "  const get = (p) => p === '@status' ? pm.response.code : p === '@time' ? pm.response.responseTime : String(p).split('.').filter(Boolean).reduce((o, k) => (o == null ? undefined : o[k]), j);",
+      "  const show = (v) => v === undefined ? 'missing' : v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v);",
+      "  const isEmpty = (v) => v == null || v === '' || (Array.isArray(v) && !v.length) || (typeof v === 'object' && !Object.keys(v).length);"];
+    rules.forEach((r) => out.push(ruleCode(r)));
     save.forEach(([p, v]) => out.push(
-      `  { const v = get(${js(p)}); pm.test(${js('Saved ' + v.trim() + ' from ' + p.trim() + ' = ')} + v, () => { if (v === undefined || v === null || v === '') throw new Error(${js(p.trim() + ' is not in the response')}); }); if (v !== undefined && v !== null) pm.variables.set(${js(v.trim())}, typeof v === 'object' ? JSON.stringify(v) : String(v)); }`));
-    expect.forEach(([p, want]) => out.push(
-      `  { const v = get(${js(p)}); const got = v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v); pm.test(${js(p.trim() + ' = ')} + got + ${js(' (expected ' + want + ')')}, () => { if (got !== ${js(String(want))}) throw new Error('expected ' + ${js(String(want))} + ', got ' + got); }); }`));
+      `  { const v = get(${js(p)}); pm.test(${js('Saved {{' + v.trim() + '}} from ' + p.trim() + ' = ')} + show(v), () => { if (v === undefined || v === null || v === '') throw new Error(${js(p.trim() + ' is not in the response')}); }); if (v !== undefined && v !== null) pm.variables.set(${js(v.trim())}, typeof v === 'object' ? JSON.stringify(v) : String(v)); }`));
     out.push('}', END);
     return out.join('\n');
   }
+
+  /** Values a step asks the tester for while a flow runs (an OTP, a new password). */
+  T.stepAsks = (it) => (splitScript(M.script(it, 'test')).meta.ask || []).filter((a) => a && a.var);
 
   /** Leaf paths of a JSON response, for the "save from response" suggestions. */
   function jsonPaths(body) {
@@ -122,7 +164,11 @@
   function stepOf(it, srcId) {
     const { meta } = splitScript(M.script(it, 'test'));
     const runAs = detectRunAs(it);
-    return { it, srcId: srcId || it.id, runAs, detected: runAs, save: meta.save.map((x) => [...x]), expect: meta.expect.map((x) => [...x]), open: false, tried: null };
+    // Flows saved before rules existed kept [[path, value]] "must equal" pairs plus an implicit OK check.
+    const rules = (meta.rules || []).length ? meta.rules.map((r) => Object.assign({}, r))
+      : (meta.expect || []).length ? [{ field: '@ok' }].concat(meta.expect.map(([field, value]) => ({ field, op: 'is', value }))) : [];
+    if (!(meta.rules || []).length && !(meta.expect || []).length && (meta.save || []).length) rules.unshift({ field: '@ok' });
+    return { it, srcId: srcId || it.id, runAs, detected: runAs, save: (meta.save || []).map((x) => [...x]), rules, ask: (meta.ask || []).map((a) => Object.assign({}, a)), open: false, tried: null };
   }
 
   /** The request as it will be saved: the chosen token applied, the checks written into its test script. */
@@ -138,7 +184,7 @@
       }
     }
     const { rest } = splitScript(M.script(it, 'test'));
-    const block = builderBlock(step.save, step.expect);
+    const block = builderBlock({ save: step.save, rules: step.rules, ask: step.ask });
     M.setScript(it, 'test', [rest, block].filter((x) => x.trim()).join('\n'));
     return it;
   }
@@ -254,6 +300,32 @@
     T.modal(it.name, body, [{ label: 'Close', run: (c) => c() }]);
   };
 
+  /* ── examples ────────────────────────────────────────────────────────────── */
+
+  // Ready-made flows built from APIs the collection already has, with their validations filled in —
+  // the quickest way to see how asking, checking and keeping values fit together.
+  const EXAMPLES = [{
+    label: 'Password reset — OTP, new password, log in with it',
+    name: 'Password reset — OTP, new password, log in with it',
+    desc: 'Asks for the phone number, the SMS OTP and a new password, resets the password, then proves it by logging in with the new one.',
+    steps: [
+      { url: '/auth/request/update-password', name: '1. Request a reset OTP',
+        ask: [{ var: 'phone', label: 'Phone number of the test account (dial code + number, no +)' }],
+        rules: [{ field: '@ok' }, { field: '_id', op: 'exists', value: '' }],
+        save: [['_id', 'agp_user_id']] },
+      { url: '/auth/validate/otp-reset-password/', name: '2. Validate the OTP',
+        ask: [{ var: 'otp', label: 'OTP from the SMS' }],
+        rules: [{ field: '@ok' }, { field: 'reset_token', op: 'notempty', value: '' }],
+        save: [['reset_token', 'reset_token']] },
+      { url: '/auth/update/reset-password', name: '3. Set the new password',
+        ask: [{ var: 'new_password', label: 'New password to set' }],
+        rules: [{ field: '@ok' }, { field: 'status', op: 'true', value: '' }] },
+      { url: '/auth/login/phone', method: 'POST', name: '4. Log in with the new password',
+        ask: [{ var: 'password', label: 'Type the new password again — the login must work with it' }],
+        rules: [{ field: '@ok' }, { field: 'access_token', op: 'notempty', value: '' }, { field: 'user._id', op: 'is', value: '{{agp_user_id}}' }] }
+    ]
+  }];
+
   /* ── dialog ────────────────────────────────────────────────────────────── */
 
   /** Open the builder for an existing flow folder, or with no argument for a new flow. */
@@ -357,13 +429,15 @@
       return steps.map((st, idx) => {
         const it = finalItem(st);
         const own = new Set(varsSetByScripts(it, ['prerequest']));      // set just before this step is sent
+        const asked = new Set(st.ask.map((a) => a.var));
         const chips = varsUsed(it).map((k) => {
+          if (asked.has(k)) return { k, kind: 'ask' };
           if (madeBy.has(k)) return { k, kind: 'step', from: madeBy.get(k) };
           if (own.has(k)) return { k, kind: 'step', from: idx + 1 };
           const v = valueOf(k);
           return v === null ? { k, kind: 'missing' } : v.trim() ? { k, kind: 'vars' } : { k, kind: 'empty' };
         });
-        varsSetByScripts(it).forEach((k) => { if (!madeBy.has(k)) madeBy.set(k, idx + 1); });
+        varsSetByScripts(it).concat([...asked]).forEach((k) => { if (!madeBy.has(k)) madeBy.set(k, idx + 1); });
         return chips;
       });
     }
@@ -387,7 +461,11 @@
         Object.entries(RUN_AS).map(([k, v]) => h('option', { value: k, text: v.label, selected: st.runAs === k })));
       const nameEdit = h('input.fb-step-name', { value: st.it.name, 'aria-label': 'Step name', oninput: () => { st.it.name = nameEdit.value; touch(); } });
       const moveBy = (d) => { const j = idx + d; if (j < 0 || j >= steps.length) return; steps.splice(idx, 1); steps.splice(j, 0, st); touch(); drawSteps(); };
-      const checks = st.save.length + st.expect.length;
+      const checks = st.save.length + st.rules.length + st.ask.length;
+      const summary = [
+        ...st.ask.map((a) => h('span.fb-sum.ask', { text: `✎ asks {{${a.var}}}`, title: a.label || '' })),
+        ...st.rules.map((r) => h('span.fb-sum.rule', { text: '✓ ' + T.ruleText(r) })),
+        ...st.save.map(([p, v]) => h('span.fb-sum.save', { text: `⤓ ${p} → {{${v}}}` }))];
 
       const card = h('li.fb-step', { class: st.open ? 'open' : '' },
         h('div.fb-step-head', {},
@@ -401,53 +479,191 @@
           nameEdit,
           runAs,
           h('div.fb-step-tools', {},
-            h('button.ghost', { text: checks ? `Checks · ${checks}` : 'Checks', title: 'Save values from the response and check fields', 'aria-expanded': String(st.open), onclick: () => { st.open = !st.open; drawSteps(); } }),
+            h('button', { class: 'fb-val-btn' + (checks ? ' has' : ''), text: checks ? `✓ Validations · ${checks}` : '+ Validations', title: 'What this step must return, what to keep for later steps, and what to ask while running', 'aria-expanded': String(st.open), onclick: () => { st.open = !st.open; drawSteps(); } }),
             h('button.ghost', { text: '↑', title: 'Move up', 'aria-label': 'Move up', disabled: idx === 0, onclick: () => moveBy(-1) }),
             h('button.ghost', { text: '↓', title: 'Move down', 'aria-label': 'Move down', disabled: idx === steps.length - 1, onclick: () => moveBy(1) }),
             h('button.ghost', { text: '⧉', title: 'Duplicate this step', 'aria-label': 'Duplicate', onclick: () => { const copy = stepOf(M.clone(finalItem(st))); copy.it.id = M.uid(); copy.it.name = st.it.name + ' (again)'; steps.splice(idx + 1, 0, copy); touch(); drawSteps(); } }),
             h('button.ghost.danger', { text: '✕', title: 'Remove from the flow', 'aria-label': 'Remove', onclick: () => { steps.splice(idx, 1); touch(); drawSteps(); } }))),
         h('div.fb-step-sub', {},
           h('code.fb-url', { text: M.urlRaw(req), title: M.urlRaw(req) }),
-          chips.map((c) => h('span.fb-chip', {
-            class: c.kind, text: c.kind === 'step' ? `{{${c.k}}} ← step ${c.from}` : `{{${c.k}}}`,
-            title: c.kind === 'step' ? `Set by step ${c.from}` : c.kind === 'vars' ? 'Has a value in Variables' : c.kind === 'empty' ? 'In Variables, but empty — sent as blank' : 'No value yet: save it from an earlier step (Checks → Save), or add it in Variables'
+          chips.map((c) => h(c.kind === 'missing' || c.kind === 'empty' ? 'button' : 'span', {
+            class: 'fb-chip ' + c.kind,
+            text: c.kind === 'step' ? `{{${c.k}}} ← step ${c.from}` : c.kind === 'ask' ? `{{${c.k}}} ← asked` : `{{${c.k}}}`,
+            title: c.kind === 'step' ? `Set by step ${c.from}` : c.kind === 'ask' ? 'Asked while the flow runs' : c.kind === 'vars' ? 'Has a value in Variables' : 'No value yet — click to ask for it while the flow runs',
+            onclick: c.kind === 'missing' || c.kind === 'empty' ? () => { st.ask.push({ var: c.k, label: '' }); st.open = true; touch(); drawSteps(); } : undefined
           }))),
+        !st.open && summary.length ? h('div.fb-sums', {}, summary) : '',
         st.open ? checksPanel(st) : '');
       return card;
     }
 
     function checksPanel(st) {
-      const tried = st.tried || (S.results.get(st.srcId) && S.results.get(st.srcId).res ? S.results.get(st.srcId) : null);
+      const tried = st.tried || (S.results.get(st.it.id) && S.results.get(st.it.id).res ? S.results.get(st.it.id)
+        : S.results.get(st.srcId) && S.results.get(st.srcId).res ? S.results.get(st.srcId) : null);
       const paths = tried && tried.res ? jsonPaths(tried.res.body) : [];
       const listId = 'fb-paths-' + st.it.id;
-      const datalist = h('datalist', { id: listId }, paths.map((p) => h('option', { value: p.path, label: p.value.slice(0, 40) })));
-      const rowsOf = (list, kind) => list.map((row, i) => h('div.fb-check-row', {},
-        h('input', { value: row[0], list: listId, placeholder: 'data.transaction_id', 'aria-label': 'Response field', oninput: (ev) => { row[0] = ev.target.value; touch(); } }),
-        h('span.faint', { text: kind === 'save' ? 'save as' : 'must equal' }),
-        h('input', { value: row[1], placeholder: kind === 'save' ? 'flow_tx' : 'true', 'aria-label': kind === 'save' ? 'Variable name' : 'Expected value', oninput: (ev) => { row[1] = ev.target.value; touch(); }, onchange: () => drawSteps() }),
-        h('button.ghost', { text: '✕', 'aria-label': 'Remove', onclick: () => { list.splice(i, 1); touch(); drawSteps(); } })));
+      const datalist = h('datalist', { id: listId },
+        h('option', { value: '@status', label: 'HTTP status' }), h('option', { value: '@time', label: 'Response time (ms)' }),
+        paths.map((p) => h('option', { value: p.path, label: p.value.slice(0, 40) })));
+      const redraw = () => { touch(); drawSteps(); };
+
+      /* ask while running */
+      const askRows = st.ask.map((a, i) => h('div.fb-row.ask', {},
+        h('span.fb-row-lead', { text: 'Ask for' }),
+        h('input.mono', { value: a.var, placeholder: 'otp', 'aria-label': 'Variable', oninput: (ev) => { a.var = ev.target.value.trim(); touch(); }, onchange: redraw }),
+        h('input', { value: a.label || '', placeholder: 'Question to show, e.g. Enter the OTP sent by SMS', 'aria-label': 'Question', oninput: (ev) => { a.label = ev.target.value; touch(); } }),
+        h('button.ghost', { text: '✕', 'aria-label': 'Remove', onclick: () => { st.ask.splice(i, 1); redraw(); } })));
+
+      /* rules */
+      const ruleRows = st.rules.map((r, i) => {
+        if (r.field === '@ok') {
+          return h('div.fb-row.rule', {}, h('span.fb-row-lead', { text: 'Check' }),
+            h('span.fb-ok', { text: 'Response looks OK — HTTP 2xx and no "status": false' }),
+            h('button.ghost', { text: '✕', 'aria-label': 'Remove', onclick: () => { st.rules.splice(i, 1); redraw(); } }));
+        }
+        const op = h('select', { 'aria-label': 'Condition', onchange: () => { r.op = op.value; redraw(); } },
+          Object.entries(OPS).map(([k, v]) => h('option', { value: k, text: v.label, selected: r.op === k })));
+        return h('div.fb-row.rule', {},
+          h('span.fb-row-lead', { text: 'Check' }),
+          h('input.mono', { value: r.field, list: listId, placeholder: 'status', 'aria-label': 'Response field', oninput: (ev) => { r.field = ev.target.value.trim(); touch(); }, onchange: redraw }),
+          op,
+          OPS[r.op] && OPS[r.op].value
+            ? h('input.mono', { value: r.value == null ? '' : r.value, placeholder: 'value or {{variable}}', 'aria-label': 'Expected value', oninput: (ev) => { r.value = ev.target.value; touch(); } })
+            : h('span'),
+          h('button.ghost', { text: '✕', 'aria-label': 'Remove', onclick: () => { st.rules.splice(i, 1); redraw(); } }));
+      });
+      const has = (field, op) => st.rules.some((r) => r.field === field && (!op || r.op === op));
+      const preset = (label, rule) => h('button.fb-preset', { text: label, disabled: has(rule.field, rule.op), onclick: () => { st.rules.push(Object.assign({}, rule)); redraw(); } });
+
+      /* saves */
+      const saveRows = st.save.map((row, i) => h('div.fb-row.save', {},
+        h('span.fb-row-lead', { text: 'Keep' }),
+        h('input.mono', { value: row[0], list: listId, placeholder: 'reset_token', 'aria-label': 'Response field', oninput: (ev) => { row[0] = ev.target.value.trim(); touch(); } }),
+        h('span.faint', { text: 'as' }),
+        h('input.mono', { value: row[1], placeholder: 'reset_token', 'aria-label': 'Variable name', oninput: (ev) => { row[1] = ev.target.value.trim(); touch(); }, onchange: redraw }),
+        h('button.ghost', { text: '✕', 'aria-label': 'Remove', onclick: () => { st.save.splice(i, 1); redraw(); } })));
+
+      /* try + clickable response */
       const tryBtn = h('button', {
-        text: '▶ Try this step', title: 'Send just this step now to see its response and pick fields from it',
+        text: tried ? '▶ Try again' : '▶ Try this step',
+        title: 'Send just this step now and see its response — then click a value to check or keep it',
         onclick: async () => {
           const risk = T.riskOf(st.it);
           if (risk && !confirm(`This request ${risk}. Send it anyway?`)) return;
+          for (const a of st.ask) {
+            const cur = T.localStore().get(a.var);
+            const v = prompt(a.label || `Value for {{${a.var}}}`, cur == null ? '' : cur);
+            if (v === null) return;
+            T.localStore().set(a.var, v);
+          }
           tryBtn.disabled = true; tryBtn.textContent = 'Sending…';
           st.tried = await T.execute(finalItem(st));
           if (S.envDirty) T.saveEnv(true);
           drawSteps();
         }
       });
-      const preview = tried ? (tried.res ? h('pre.fb-preview', { text: `HTTP ${tried.res.status}\n${String(tried.res.body || '').slice(0, 600)}` }) : h('p.hint.fb-miss', { text: tried.error || tried.skipped || '' })) : '';
+      const addCheck = (path, value) => {
+        if (!st.rules.length) st.rules.push({ field: '@ok' });
+        const v = String(value);
+        const op = v === 'true' ? 'true' : v === 'false' ? 'false' : 'is';
+        st.rules.push({ field: path, op, value: op === 'is' ? v : '' });
+        redraw();
+      };
+      const addKeep = (path) => {
+        const key = path.split('.').filter((x) => !/^\d+$/.test(x)).pop() || 'value';
+        const name = key.replace(/^_/, '').replace(/[^A-Za-z0-9_]/g, '_') || 'value';
+        if (!st.rules.length) st.rules.push({ field: '@ok' });
+        st.save.push([path, name]);
+        redraw();
+      };
+      const addExists = (path) => {
+        if (!st.rules.length) st.rules.push({ field: '@ok' });
+        st.rules.push({ field: path, op: 'exists', value: '' });
+        redraw();
+      };
+      let responseBox = '';
+      if (tried && tried.res) {
+        let body = null; try { body = JSON.parse(tried.res.body); } catch (e) { /* not JSON */ }
+        const results = (tried.out && tried.out.tests) || [];
+        responseBox = h('div.fb-resp', {},
+          h('div.fb-resp-head', {},
+            h('b', { class: tried.res.status < 300 ? 'mk-verified' : 'mk-failing', text: `HTTP ${tried.res.status}` }),
+            h('span.faint', { text: `${tried.res.timeMs} ms` }),
+            body !== null ? h('span.hint', { text: 'Click ✓ to check a value, or ⤓ to keep it for later steps' }) : ''),
+          results.length ? h('ul.fb-results', {}, results.map((t) => h('li', { class: t.ok ? 'mk-verified' : 'mk-failing', text: (t.ok ? '✓ ' : '✕ ') + t.name + (t.error && !t.name.includes(t.error) ? ' — ' + t.error : '') }))) : '',
+          body !== null ? jsonTree(body, addCheck, addKeep, addExists) : h('pre.fb-preview', { text: String(tried.res.body || '').slice(0, 800) }));
+      } else if (tried) {
+        responseBox = h('p.hint.fb-miss', { text: tried.error || tried.skipped || '' });
+      }
+
       return h('div.fb-checks', {},
         datalist,
-        h('div.fb-check-title', {}, h('b', { text: 'Save from the response' }), h('span.hint', { text: 'Later steps that use {{name}} get this value.' })),
-        rowsOf(st.save, 'save'),
-        h('button.ghost', { text: '+ Save a value', onclick: () => { st.save.push(['', '']); touch(); drawSteps(); } }),
-        h('div.fb-check-title', {}, h('b', { text: 'Check' }), h('span.hint', { text: 'With no checks, a step passes on HTTP 2xx and no "status": false in the body.' })),
-        rowsOf(st.expect, 'expect'),
-        h('button.ghost', { text: '+ Check a field', onclick: () => { st.expect.push(['status', 'true']); touch(); drawSteps(); } }),
-        h('div.inline', { style: 'margin-top:6px' }, tryBtn, paths.length ? h('span.hint', { text: `${paths.length} fields to pick from in the boxes above` }) : h('span.hint', { text: 'Try it once to get field suggestions.' })),
-        preview);
+        h('section.fb-val', {},
+          h('div.fb-val-title', {}, h('b', { text: '1 · Ask while running' }), h('span.hint', { text: 'For things only a person has — an OTP from SMS, a new password. The test pauses and asks.' })),
+          askRows,
+          h('button.ghost.fb-add-row', { text: '+ Ask for a value', onclick: () => { st.ask.push({ var: '', label: '' }); redraw(); } })),
+        h('section.fb-val', {},
+          h('div.fb-val-title', {}, h('b', { text: '2 · Check the response' }), h('span.hint', { text: 'The step passes only if every check is true. No checks = HTTP 2xx and no "status": false.' })),
+          ruleRows,
+          h('div.fb-presets', {},
+            preset('+ Response looks OK', { field: '@ok' }),
+            preset('+ status is true', { field: 'status', op: 'true' }),
+            preset('+ message contains…', { field: 'message', op: 'contains', value: 'success' }),
+            preset('+ HTTP is 2xx', { field: '@status', op: 'ok2xx' }),
+            h('button.fb-preset', { text: '+ Custom check', onclick: () => { st.rules.push({ field: '', op: 'is', value: '' }); redraw(); } }))),
+        h('section.fb-val', {},
+          h('div.fb-val-title', {}, h('b', { text: '3 · Keep for the next steps' }), h('span.hint', { text: 'A value from this response becomes {{name}} for every step after it.' })),
+          saveRows,
+          h('button.ghost.fb-add-row', { text: '+ Keep a value', onclick: () => { st.save.push(['', '']); redraw(); } })),
+        h('div.inline.fb-try', {}, tryBtn, !tried ? h('span.hint', { text: 'Try it once — then you can click values in the response instead of typing field names.' }) : ''),
+        responseBox);
+    }
+
+    /** A JSON response as a tree whose values each get a ✓ (check it) and ⤓ (keep it) button. */
+    function jsonTree(value, onCheck, onKeep, onExists) {
+      let shown = 0;
+      const node = (v, path, key, depth) => {
+        if (shown > 120) return null;
+        if (v !== null && typeof v === 'object') {
+          const entries = Array.isArray(v) ? v.slice(0, 3).map((x, i) => [String(i), x]) : Object.entries(v);
+          const open = depth < 2;
+          return h('details.fb-tree-obj', { open },
+            h('summary', {}, key !== null ? h('span.fb-tree-key', { text: key }) : '', h('span.faint', { text: Array.isArray(v) ? ` [${v.length}]` : ' {…}' }),
+              key !== null ? h('span.fb-tree-acts', {}, h('button.ghost', { text: '✓ exists', title: `Check that ${path} is in the response`, onclick: (ev) => { ev.preventDefault(); onExists(path); } })) : ''),
+            h('div.fb-tree-kids', {}, entries.map(([k, x]) => node(x, path ? `${path}.${k}` : k, k, depth + 1))));
+        }
+        shown++;
+        const text = v === null ? 'null' : typeof v === 'string' ? `"${v.length > 80 ? v.slice(0, 80) + '…' : v}"` : String(v);
+        return h('div.fb-tree-leaf', {},
+          h('span.fb-tree-key', { text: key }), h('span.faint', { text: ': ' }),
+          h('span', { class: v === null || typeof v === 'boolean' ? 'j-lit' : typeof v === 'number' ? 'j-num' : 'j-str', text }),
+          h('span.fb-tree-acts', {},
+            h('button.ghost', { text: '✓ check', title: `Check that ${path} is ${text}`, onclick: () => onCheck(path, v) }),
+            h('button.ghost', { text: '⤓ keep', title: `Keep ${path} for later steps`, onclick: () => onKeep(path) })));
+      };
+      return h('div.fb-tree', {}, node(value, '', null, 0));
+    }
+
+    /* examples */
+    function loadExample(ex) {
+      const built = [];
+      for (const spec of ex.steps) {
+        const src = lib.find((x) => !FLOWS_RE.test(x.top) && M.urlRaw(M.req(x.it)).includes(spec.url) && (!spec.method || (M.req(x.it).method || 'GET').toUpperCase() === spec.method));
+        if (!src) return T.toast(`This collection has no API for ${spec.url} — the example needs it`, 'error');
+        const st = copyFromLibrary(src.it);
+        st.it.name = spec.name;
+        st.ask = (spec.ask || []).map((a) => Object.assign({}, a));
+        st.rules = (spec.rules || []).map((r) => Object.assign({}, r));
+        st.save = (spec.save || []).map((x) => [...x]);
+        st.open = false;
+        built.push(st);
+      }
+      if (steps.length && !confirm('Replace the steps you have with this example?')) return;
+      steps = built;
+      if (!name.trim()) { name = ex.name; nameIn.value = name; }
+      if (!desc.trim()) { desc = ex.desc; descIn.value = desc; }
+      steps[0].open = true;
+      touch(); drawSteps();
     }
 
     /* save */
@@ -484,7 +700,8 @@
         h('aside.fb-lib', {}, h('div.fb-col-title', {}, h('b', { text: 'APIs' }), h('span.hint', { text: `${lib.length} in this collection` })), search, libList),
         h('section.fb-flow', {},
           h('div.fb-meta', {}, h('label', { for: 'fb-name', text: 'Flow name' }), nameIn, h('label', { for: 'fb-desc', text: 'Description' }), descIn),
-          h('div.fb-col-title', {}, h('b', { text: 'Steps' }), summary),
+          h('div.fb-col-title', {}, h('b', { text: 'Steps' }), summary, h('span.grow'),
+            h('button.ghost', { text: '✨ Examples', title: 'Start from a ready-made flow', onclick: (ev) => T.menu(ev.currentTarget, EXAMPLES.map((ex) => ({ label: ex.label, run: () => loadExample(ex) }))) })),
           stepList)),
       h('footer', {},
         h('span.hint.grow', { text: 'Saved into the 🧪 Flows folder. Steps are copies — changing a flow never changes the original API.' }),
