@@ -93,6 +93,7 @@ interface Entry {
   api?: Api
   json?: { before: string; value: unknown; after: string }
   url?: string
+  telescope?: string     // a Laravel Telescope link to this request, on the line or right next to it
   response?: Entry       // an "After Response::{…}" entry paired with this API call
   pairedTo?: number      // on a response entry: the API call it belongs to
 }
@@ -101,6 +102,8 @@ interface Entry {
 const START_RE = /^(?:(\d{1,2}:\d{2}:\d{2}(?:[.,]\d+)?)\s+)?\[(Log|Info|Debug|Verbose|Warning|Warn|Error|Exception|Assert|Fatal|Severe)\]\s?(.*)$/i
 const API_RE = /^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(https?:\/\/\S+)(?:\s+(\S+))?(?:\s+(\d+)\s*ms)?\b/i
 const URL_RE = /https?:\/\/[^\s"'<>]+/
+// Laravel Telescope's page for one request: https://host/telescope/requests/<uuid>
+const TELESCOPE_RE = /https?:\/\/[^\s"'<>]+\/telescope\/requests\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
 
 const levelOf = (raw: string): Level =>
   /^(error|exception|assert|fatal|severe)$/i.test(raw) ? 'error' : /^warn/i.test(raw) ? 'warn' : 'log'
@@ -146,6 +149,8 @@ function parseLogs(text: string): Entry[] {
   }
   for (const e of entries) {
     const plain = stripRich(e.message)
+    const t = TELESCOPE_RE.exec(stripRich(e.raw))
+    if (t) e.telescope = t[0]
     const a = API_RE.exec(plain)
     if (a) {
       const status = a[3] ?? ''
@@ -158,6 +163,7 @@ function parseLogs(text: string): Entry[] {
   }
   // "After Response::{…}" lands a line or two before the "GET url OK 120ms" it belongs to. Pair a response
   // with the next API call only when nothing else API-like sits between them, so a guess is never a stretch.
+  const claimed = new Set<number>()
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i]
     if (!e.api) continue
@@ -165,6 +171,16 @@ function parseLogs(text: string): Entry[] {
       const r = entries[k]
       if (r.api) break
       if (r.json && r.pairedTo === undefined && /response/i.test(r.json.before)) { e.response = r; r.pairedTo = i; break }
+    }
+    // A Telescope link logged next to the call (either side, no other call in between) belongs to it — and to
+    // that call only, so the next call can't borrow it.
+    if (!e.telescope && e.response?.telescope) e.telescope = e.response.telescope
+    for (const dir of [1, -1]) {
+      if (e.telescope) break
+      for (let k = i + dir; k >= 0 && k < entries.length && Math.abs(k - i) <= 3; k += dir) {
+        if (entries[k].api) break
+        if (entries[k].telescope && !claimed.has(k)) { e.telescope = entries[k].telescope; claimed.add(k); break }
+      }
     }
   }
   return entries
@@ -213,14 +229,27 @@ async function copyText(text: string) {
   return ok
 }
 
-function CopyButton({ text, label = 'Copy', big = false }: { text: string; label?: string; big?: boolean }) {
+function CopyButton({ text, label = 'Copy', big = false, small = false }: { text: string; label?: string; big?: boolean; small?: boolean }) {
   const [state, setState] = useState<'' | 'ok' | 'fail'>('')
   return (
-    <button className={big ? 'lv-copy-all' : 'lv-copy'} title={label}
+    <button className={big ? 'lv-copy-all' : small ? 'lv-copy-labelled' : 'lv-copy'} title={label}
             onClick={async e => { e.stopPropagation(); setState((await copyText(text)) ? 'ok' : 'fail'); setTimeout(() => setState(''), 1500) }}>
-      {state === 'ok' ? 'Copied ✓' : state === 'fail' ? 'Copy failed' : big ? label : '⧉'}
+      {state === 'ok' ? 'Copied ✓' : state === 'fail' ? 'Copy failed' : big || small ? label : '⧉'}
     </button>
   )
+}
+
+/** One API call written up for a backend developer: what was called, what came back, where to look. */
+function forBackend(e: Entry, response?: Entry): string {
+  if (!e.api) return e.raw
+  const lines = [
+    `${e.api.method} ${e.api.url}`,
+    `Result: ${[e.api.status || 'no status logged', e.api.ms && `${e.api.ms} ms`].filter(Boolean).join(' · ')}${e.time ? `  (app time ${e.time})` : ''}`,
+  ]
+  if (e.telescope) lines.push(`Telescope: ${e.telescope}`)
+  lines.push(`Page: ${location.href}`)
+  if (response?.json) lines.push('', 'Response:', JSON.stringify(response.json.value, null, 2))
+  return lines.join('\n')
 }
 
 function UrlLine({ url, needle }: { url: string; needle: string }) {
@@ -261,6 +290,10 @@ function EntryCard({ e, needle, response }: { e: Entry; needle: string; response
         {e.json && !e.api && <span className="lv-tag">JSON</span>}
         <span className="lv-spacer" />
         {e.time && <span className="lv-time">{e.time}</span>}
+        {e.telescope && (
+          <a className="lv-telescope" href={e.telescope} target="_blank" rel="noopener noreferrer" title={e.telescope}>🔭 Telescope</a>
+        )}
+        {e.api && <CopyButton text={forBackend(e, response)} label="Copy for backend" small />}
         <CopyButton text={copy} />
       </div>
 
