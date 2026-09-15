@@ -46,6 +46,7 @@ export interface IssueRow {
   id: string; title: string; severity: string; status: string
   fixed_in_build: string | null; build_version: string; game: string; session: string; platform: string | null
   has_screenshot: number; created_at: number
+  assignee_id: string | null; assignee_email: string | null
 }
 export interface Sibling {
   id: string; title: string; severity: string; status: string
@@ -99,6 +100,10 @@ export const api = {
   setStatus: (iid: string, status: string, fixedInBuild?: string) =>
     req<{ ok: boolean }>(`/api/issues/${iid}`, {
       method: 'PATCH', body: JSON.stringify({ status, fixedInBuild }),
+    }),
+  setAssignee: (iid: string, assigneeId: string | null) =>
+    req<{ ok: boolean; assignee_id: string | null; assignee_email: string | null }>(`/api/issues/${iid}/assignee`, {
+      method: 'PATCH', body: JSON.stringify({ assignee_id: assigneeId }),
     }),
   setNotes: (iid: string, notes: string) =>
     req<{ ok: boolean }>(`/api/issues/${iid}/notes`, { method: 'PATCH', body: JSON.stringify({ notes }) }),

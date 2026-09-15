@@ -295,6 +295,7 @@ def remove_member(uid):
         if row["is_owner"]:
             return jsonify(error="the owner account can't be removed"), 400
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
+        conn.execute("UPDATE issues SET assignee_id = NULL WHERE assignee_id = ?", (uid,))   # back to unassigned
         conn.execute("DELETE FROM users WHERE id = ?", (uid,))
     _forget_user(uid)
     return jsonify(ok=True)
@@ -421,23 +422,23 @@ def export_issues():
     if project is None:
         return jsonify(error="unknown api key"), 401
 
-    q = """SELECT id, title, description, test_case, severity, status, fixed_in_build,
-                  build_version, game, session, platform, device_model, os_version,
-                  has_screenshot, has_logs, has_clip, created_at, updated_at
-           FROM issues WHERE project_id = ?"""
+    q = """SELECT i.id, i.title, i.description, i.test_case, i.severity, i.status, i.fixed_in_build,
+                  i.build_version, i.game, i.session, i.platform, i.device_model, i.os_version,
+                  i.has_screenshot, i.has_logs, i.has_clip, i.created_at, i.updated_at, u.email AS assignee
+           FROM issues i LEFT JOIN users u ON u.id = i.assignee_id WHERE i.project_id = ?"""
     params: list = [project["id"]]
     if request.args.get("status"):
-        q += " AND status = ?"; params.append(request.args["status"])
+        q += " AND i.status = ?"; params.append(request.args["status"])
     if request.args.get("game"):
-        q += " AND game = ?"; params.append(request.args["game"])
+        q += " AND i.game = ?"; params.append(request.args["game"])
     if request.args.get("since"):
         try:
-            params.append(int(request.args["since"])); q += " AND created_at >= ?"
+            params.append(int(request.args["since"])); q += " AND i.created_at >= ?"
         except (TypeError, ValueError):
             return jsonify(error="`since` must be a unix timestamp"), 400
     if request.args.get("with_test_case"):
-        q += " AND test_case IS NOT NULL AND test_case <> ''"
-    q += " ORDER BY created_at DESC LIMIT 2000"
+        q += " AND i.test_case IS NOT NULL AND i.test_case <> ''"
+    q += " ORDER BY i.created_at DESC LIMIT 2000"
 
     with db.connect() as conn:
         rows = conn.execute(q, params).fetchall()
@@ -467,15 +468,18 @@ INCIDENT_WINDOW = 120
 def list_issues(pid):
     if not _own_project(pid):
         return jsonify(error="not found"), 404
-    q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, session, platform, has_screenshot, created_at FROM issues WHERE project_id = ?"
+    q = """SELECT i.id, i.title, i.severity, i.status, i.fixed_in_build, i.build_version, i.game, i.session,
+                  i.platform, i.has_screenshot, i.created_at, i.assignee_id, u.email AS assignee_email
+           FROM issues i LEFT JOIN users u ON u.id = i.assignee_id
+           WHERE i.project_id = ?"""
     params: list = [pid]
     if request.args.get("build"):
-        q += " AND build_version = ?"; params.append(request.args["build"])
+        q += " AND i.build_version = ?"; params.append(request.args["build"])
     if request.args.get("game"):
-        q += " AND game = ?"; params.append(request.args["game"])
+        q += " AND i.game = ?"; params.append(request.args["game"])
     if request.args.get("status"):
-        q += " AND status = ?"; params.append(request.args["status"])
-    q += " ORDER BY created_at DESC LIMIT 500"
+        q += " AND i.status = ?"; params.append(request.args["status"])
+    q += " ORDER BY i.created_at DESC LIMIT 500"
     with db.connect() as conn:
         rows = conn.execute(q, params).fetchall()
     return jsonify([dict(r) for r in rows])
@@ -487,7 +491,10 @@ def issue_detail(iid):
     if not _own_issue(iid):
         return jsonify(error="not found"), 404
     with db.connect() as conn:
-        row = conn.execute("SELECT * FROM issues WHERE id = ?", (iid,)).fetchone()
+        row = conn.execute(
+            "SELECT i.*, u.email AS assignee_email FROM issues i LEFT JOIN users u ON u.id = i.assignee_id WHERE i.id = ?",
+            (iid,),
+        ).fetchone()
         if row is None:
             return jsonify(error="not found"), 404
         comments = conn.execute(
@@ -552,6 +559,26 @@ def update_issue(iid):
             return jsonify(error="not found"), 404
         conn.execute(sql, params)
     return jsonify(ok=True)
+
+
+@bp.patch("/api/issues/<iid>/assignee")
+@require_user
+def set_assignee(iid):
+    """Assign an issue to a member of the signed-in user's team, or clear it with null."""
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
+    uid = (request.get_json(silent=True) or {}).get("assignee_id")
+    with db.connect() as conn:
+        if uid:
+            member = conn.execute("SELECT email FROM users WHERE id = ? AND team_id = ?",
+                                  (str(uid), g.user["team_id"])).fetchone()
+            if member is None:
+                return jsonify(error="that person is not in your team"), 400
+        if conn.execute("SELECT 1 FROM issues WHERE id = ?", (iid,)).fetchone() is None:
+            return jsonify(error="not found"), 404
+        conn.execute("UPDATE issues SET assignee_id = ?, updated_at = ? WHERE id = ?",
+                     (str(uid) if uid else None, db.now(), iid))
+    return jsonify(ok=True, assignee_id=str(uid) if uid else None, assignee_email=member["email"] if uid else None)
 
 
 @bp.patch("/api/issues/<iid>/notes")

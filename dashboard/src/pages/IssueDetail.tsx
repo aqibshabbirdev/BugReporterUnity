@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { api, fmtTime, IssueDetail as Detail } from '../api'
+import { api, fmtTime, IssueDetail as Detail, Me, Member } from '../api'
+import LogViewer from '../components/LogViewer'
 import { Severity, Status } from '../components/Badges'
 import { STATUS_FLOW, STATUS_HINT, STATUS_LABEL } from '../status'
 
@@ -12,79 +13,6 @@ const TEST_CASE_TEMPLATE = `Steps to reproduce:
 3.
 Expected:
 Actual: `
-
-// ── Unity rich text ──────────────────────────────────────────────────────────
-// Game logs arrive with Unity's console markup (<color=…>, <b>, <i>, <u>, <size=…>). We render it as
-// real styling instead of raw tags. Input is untrusted log text, so we NEVER use innerHTML — every text
-// node goes through React (auto-escaped); tags only ever become inline style, never markup.
-const UNITY_COLORS: Record<string, string> = {
-  red: '#f85149', green: '#3fb950', lime: '#7ee787', blue: '#4493f8', navy: '#4493f8',
-  cyan: '#39c5cf', aqua: '#39c5cf', teal: '#39c5cf', yellow: '#e3b341', orange: '#f0883e',
-  magenta: '#f778ba', fuchsia: '#f778ba', purple: '#bc8cff', white: '#e6edf3', silver: '#c9d1d9',
-  grey: '#8b949e', gray: '#8b949e', black: '#6e7681', maroon: '#f85149', olive: '#d29922', brown: '#d29922',
-}
-function resolveColor(raw: string): string | undefined {
-  const c = raw.trim().replace(/^["']|["']$/g, '')
-  if (!c) return undefined
-  return c[0] === '#' ? c : (UNITY_COLORS[c.toLowerCase()] ?? c)
-}
-
-interface Seg { text: string; bold: boolean; italic: boolean; underline: boolean; color?: string }
-const RICH_RE = /<(\/?)(b|i|u|color|size)(?:=([^>]*))?>/gi
-function parseRich(line: string): Seg[] {
-  const segs: Seg[] = []
-  let bold = 0, italic = 0, underline = 0
-  const colors: string[] = []
-  let last = 0
-  let m: RegExpExecArray | null
-  RICH_RE.lastIndex = 0
-  const push = (t: string) => {
-    if (t) segs.push({ text: t, bold: bold > 0, italic: italic > 0, underline: underline > 0, color: colors[colors.length - 1] || undefined })
-  }
-  while ((m = RICH_RE.exec(line))) {
-    push(line.slice(last, m.index))
-    last = RICH_RE.lastIndex
-    const close = m[1] === '/'
-    switch (m[2].toLowerCase()) {
-      case 'b': bold = Math.max(0, bold + (close ? -1 : 1)); break
-      case 'i': italic = Math.max(0, italic + (close ? -1 : 1)); break
-      case 'u': underline = Math.max(0, underline + (close ? -1 : 1)); break
-      case 'color': if (close) colors.pop(); else colors.push(resolveColor(m[3] ?? '') ?? ''); break
-      // <size=…> is consumed (so the tag doesn't show) but we don't scale log text
-    }
-  }
-  push(line.slice(last))
-  return segs
-}
-
-function highlight(text: string, needle: string): React.ReactNode[] {
-  if (!needle) return [text]
-  const out: React.ReactNode[] = []
-  const lower = text.toLowerCase()
-  let i = 0, k = 0, idx: number
-  while ((idx = lower.indexOf(needle, i)) !== -1) {
-    if (idx > i) out.push(text.slice(i, idx))
-    out.push(<mark key={k++}>{text.slice(idx, idx + needle.length)}</mark>)
-    i = idx + needle.length
-  }
-  out.push(text.slice(i))
-  return out
-}
-
-function RichLine({ text, needle }: { text: string; needle: string }) {
-  return (
-    <>
-      {parseRich(text).map((s, i) => (
-        <span key={i} style={{
-          fontWeight: s.bold ? 700 : undefined,
-          fontStyle: s.italic ? 'italic' : undefined,
-          textDecoration: s.underline ? 'underline' : undefined,
-          color: s.color,
-        }}>{highlight(s.text, needle)}</span>
-      ))}
-    </>
-  )
-}
 
 function ClipPlayer({ iid }: { iid: string }) {
   const [frames, setFrames] = useState(-1)   // -1 loading, 0 none
@@ -150,50 +78,7 @@ function ClipPlayer({ iid }: { iid: string }) {
   )
 }
 
-function LogViewer({ iid }: { iid: string }) {
-  const [text, setText] = useState<string | null>(null)
-  const [q, setQ] = useState('')
-  const endRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    fetch(api.logsUrl(iid), { credentials: 'include' })
-      .then(r => (r.ok ? r.text() : Promise.reject()))
-      .then(setText)
-      .catch(() => setText(''))
-  }, [iid])
-
-  // Errors usually sit at the tail — start the reader there.
-  useEffect(() => { endRef.current?.scrollIntoView() }, [text])
-
-  const lines = useMemo(() => (text ?? '').split('\n'), [text])
-  const needle = q.trim().toLowerCase()
-
-  if (text === null) return <div className="empty">Loading logs…</div>
-  if (text === '') return <div className="empty">No logs attached.</div>
-
-  return (
-    <>
-      <div className="row" style={{ marginBottom: 8 }}>
-        <input placeholder="Search logs… (e.g. Exception, KeeperState)" value={q}
-               onChange={e => setQ(e.target.value)} style={{ flex: 1 }} />
-        <span className="muted small">
-          {needle ? `${lines.filter(l => l.toLowerCase().includes(needle)).length} matching / ` : ''}{lines.length} lines
-        </span>
-      </div>
-      <div className="logview">
-        {lines.map((l, n) => {
-          if (needle && !l.toLowerCase().includes(needle)) return null
-          const cls = /\[(Exception|Error|Assert)\]/.test(l) ? 'err'
-                    : /\[Warning\]/.test(l) ? 'warn' : ''
-          return <div key={n} className={`ln ${cls}`}><RichLine text={l} needle={needle} /></div>
-        })}
-        <div ref={endRef} />
-      </div>
-    </>
-  )
-}
-
-export default function IssueDetail() {
+export default function IssueDetail({ me }: { me: Me }) {
   const { iid = '' } = useParams()
   const nav = useNavigate()
   const [issue, setIssue] = useState<Detail | null>(null)
@@ -208,6 +93,9 @@ export default function IssueDetail() {
   const [deleting, setDeleting] = useState(false)
   // Which device's evidence (screenshot/clip/logs) is showing. The test case + status are incident-level.
   const [activeIid, setActiveIid] = useState(iid)
+  const [members, setMembers] = useState<Member[]>([])
+  const [assignErr, setAssignErr] = useState('')
+  useEffect(() => { api.team().then(t => setMembers(t.members)).catch(() => {}) }, [])
   useEffect(() => { setActiveIid(iid) }, [iid])
 
   // Seed the build box from the issue so an already-stamped build is visible (and survives a
@@ -239,6 +127,11 @@ export default function IssueDetail() {
     // on open/pending and keeps the stored one when we send nothing.
     await api.setStatus(iid, status, status === 'waiting_for_test' ? fixedIn || undefined : undefined)
     load()
+  }
+  const setAssignee = async (uid: string) => {
+    setAssignErr('')
+    try { await api.setAssignee(iid, uid || null); load() }
+    catch (e) { setAssignErr(e instanceof Error ? e.message : 'could not assign') }
   }
   const saveNotes = async () => {
     setNotesSaved(false)
@@ -282,6 +175,21 @@ export default function IssueDetail() {
 
       {/* Triage first — the primary action on any issue. */}
       <div className="card pad" style={{ marginBottom: 14 }}>
+        <div className="assignee-row">
+          <label htmlFor="assignee">Assigned to</label>
+          <span className={`assignee-avatar${issue.assignee_id ? '' : ' none'}`} aria-hidden="true">
+            {issue.assignee_email ? issue.assignee_email.charAt(0).toUpperCase() : '?'}
+          </span>
+          <select id="assignee" value={issue.assignee_id ?? ''} onChange={e => setAssignee(e.target.value)}>
+            <option value="">Unassigned</option>
+            {issue.assignee_id && !members.some(m => m.id === issue.assignee_id) && (
+              <option value={issue.assignee_id}>{issue.assignee_email ?? 'former member'}</option>
+            )}
+            {members.map(m => <option key={m.id} value={m.id}>{m.email}{m.id === me.id ? ' (me)' : ''}</option>)}
+          </select>
+          {issue.assignee_id !== me.id && <button onClick={() => setAssignee(me.id)}>Assign to me</button>}
+          {assignErr && <span className="error">{assignErr}</span>}
+        </div>
         <label>Status</label>
         <div className="status-picker">
           {STATUS_FLOW.map(s => (

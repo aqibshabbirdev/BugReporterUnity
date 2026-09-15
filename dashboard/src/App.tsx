@@ -43,9 +43,9 @@ export default function App() {
         {me ? (
           <Route element={<Shell me={me} onLogout={() => setMe(null)} />}>
             <Route path="/" element={<Projects />} />
-            <Route path="/p/:pid" element={<Issues />} />
+            <Route path="/p/:pid" element={<Issues me={me} />} />
             <Route path="/p/:pid/settings" element={<Settings />} />
-            <Route path="/i/:iid" element={<IssueDetail />} />
+            <Route path="/i/:iid" element={<IssueDetail me={me} />} />
             <Route path="/team" element={<TeamPage me={me} />} />
           </Route>
         ) : (

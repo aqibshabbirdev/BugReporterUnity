@@ -277,6 +277,10 @@ def _migrate(conn):
     ):
         if not _has_column(conn, table, column):
             conn.execute(ddl)
+
+    # issues.assignee_id — the team member who owns a bug. NULL = unassigned; cleared when a member is removed.
+    if not _has_column(conn, "issues", "assignee_id"):
+        conn.execute("ALTER TABLE issues ADD COLUMN assignee_id VARCHAR(32) NULL, ADD KEY idx_issues_project_assignee (project_id, assignee_id)")
     teamless = [t for t in ("users", "projects", "tester_docs")
                 if conn.execute(f"SELECT 1 FROM {t} WHERE team_id IS NULL LIMIT 1").fetchone()]
     if teamless:

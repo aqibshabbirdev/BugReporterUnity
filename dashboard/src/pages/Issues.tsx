@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { api, Build, fmtTime, Game, IssueRow } from '../api'
+import { api, Build, fmtTime, Game, IssueRow, Me, Member } from '../api'
 import { Severity, Status } from '../components/Badges'
 import { isUnresolved, STATUS_FLOW, STATUS_LABEL } from '../status'
 
@@ -57,7 +57,7 @@ function toIncident(members: IssueRow[]): Incident {
   }
 }
 
-export default function Issues() {
+export default function Issues({ me }: { me: Me }) {
   const { pid = '' } = useParams()
   const nav = useNavigate()
 
@@ -74,6 +74,8 @@ export default function Issues() {
   const status = sp.get('status') || ''
   const date = sp.get('date') || ''
   const q = sp.get('q') || ''
+  const who = sp.get('who') || ''          // '' everyone · 'me' · 'none' · a member id
+  const setWho = (v: string) => setParam('who', v)
   const setBuild = (v: string) => setParam('build', v)
   const setGame = (v: string) => setParam('game', v)
   const setStatus = (v: string) => setParam('status', v)
@@ -85,6 +87,8 @@ export default function Issues() {
   const [games, setGames] = useState<Game[]>([])
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set([NO_GAME]))
 
+  const [members, setMembers] = useState<Member[]>([])
+  useEffect(() => { api.team().then(t => setMembers(t.members)).catch(() => {}) }, [])
   useEffect(() => { api.builds(pid).then(setBuilds).catch(() => {}) }, [pid])
   useEffect(() => { api.games(pid).then(setGames).catch(() => {}) }, [pid])
   useEffect(() => {
@@ -98,8 +102,9 @@ export default function Issues() {
   const scoped = useMemo(
     () => (issues ?? []).filter(i =>
       (!needle || i.title.toLowerCase().includes(needle) || (i.game ?? '').toLowerCase().includes(needle)) &&
-      (!date || dayKey(i.created_at) === date)),
-    [issues, needle, date],
+      (!date || dayKey(i.created_at) === date) &&
+      (!who || (who === 'me' ? i.assignee_id === me.id : who === 'none' ? !i.assignee_id : i.assignee_id === who))),
+    [issues, needle, date, who, me.id],
   )
   // Cluster reports into incidents (same session + close in time = one multi-device bug) so the page
   // shows and counts INCIDENTS, not raw reports.
@@ -176,7 +181,7 @@ export default function Issues() {
     if ([...sp.keys()].length === 0 && dateOptions.length > 0) setDate(dateOptions[0].key)
   }, [issues, dateOptions, dateDefaulted, sp])
 
-  const filtered = !!(build || game || status || date || needle)
+  const filtered = !!(build || game || status || date || needle || who)
   const toggle = (k: string) => setCollapsed(s => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n })
 
   return (
@@ -221,6 +226,14 @@ export default function Issues() {
             {games.map(g => <option key={g.game} value={g.game}>{g.game} ({g.open_count} unresolved)</option>)}
           </select>
         )}
+        <select value={who} onChange={e => setWho(e.target.value)} aria-label="Assigned to">
+          <option value="">Everyone's issues</option>
+          <option value="me">Assigned to me ({(issues ?? []).filter(i => i.assignee_id === me.id).length})</option>
+          <option value="none">Unassigned ({(issues ?? []).filter(i => !i.assignee_id).length})</option>
+          {members.filter(m => m.id !== me.id).map(m => (
+            <option key={m.id} value={m.id}>{m.email} ({(issues ?? []).filter(i => i.assignee_id === m.id).length})</option>
+          ))}
+        </select>
         <select value={build} onChange={e => setBuild(e.target.value)}>
           <option value="">All builds</option>
           {builds.map(b => <option key={b.version} value={b.version}>{b.version} ({b.open_count} unresolved)</option>)}
@@ -269,6 +282,12 @@ export default function Issues() {
                           </div>
                           <div className="issue-foot">
                             <span className="mono">{i.build_version}</span> · {i.platform ?? '—'} · {fmtTime(i.created_at)}
+                            {i.assignee_email && (
+                              <span className="issue-assignee" title={`Assigned to ${i.assignee_email}`}>
+                                <span className="assignee-avatar sm" aria-hidden="true">{i.assignee_email.charAt(0).toUpperCase()}</span>
+                                {i.assignee_id === me.id ? 'me' : i.assignee_email.split('@')[0]}
+                              </span>
+                            )}
                           </div>
                         </div>
                       </div>
