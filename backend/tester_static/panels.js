@@ -180,6 +180,132 @@
     return { verdict: 'pass', reason: `HTTP ${res.status}` };
   };
 
+
+  /* ── flow chart (runner) ───────────────────────────────────────────────── */
+
+  const SVG = 'http://www.w3.org/2000/svg';
+  const svg = (tag, attrs, ...kids) => {
+    const el = document.createElementNS(SVG, tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    kids.forEach((k) => el.append(k.nodeType ? k : document.createTextNode(String(k))));
+    return el;
+  };
+
+  /** The short line under a step: the check that decided it, or what the server said. */
+  function stepDetail(r) {
+    if (!r.on) return 'not selected';
+    if (r.state === 'queued') return '';
+    if (r.state === 'running') return 'sending…';
+    const tests = (r.result && r.result.out && r.result.out.tests) || [];
+    const bad = tests.find((t) => !t.ok);
+    const pick = bad || tests.find((t) => /→/.test(t.name)) || null;
+    if (pick) return pick.name.replace(/\s*\(for information\)\s*$/, '');
+    return r.reason || '';
+  }
+
+  /** Gold/silver read by a balance step, and whose wallet it was. */
+  function balanceOf(r) {
+    const res = r.result && r.result.res;
+    if (!res || !/balance/i.test(M.urlRaw(M.req(r.it)) + ' ' + r.it.name)) return null;
+    let j; try { j = JSON.parse(res.body); } catch (e) { return null; }
+    const d = j && (j.gold_balance !== undefined ? j : j.data);
+    if (!d || d.gold_balance === undefined) return null;
+    const gold = Number(d.gold_balance);
+    if (!Number.isFinite(gold)) return null;
+    const auth = (M.req(r.it).header || []).map((x) => x.value || '').join(' ');
+    const who = (auth.match(/\{\{\s*p(\d+)_token\s*\}\}/) || r.it.name.match(/\bp(?:layer)?\s*(\d)\b/i) || [])[1];
+    return { gold, who: who ? 'P' + who : 'Wallet' };
+  }
+
+  /** One small line chart per flow: gold after each balance check, one line per player. */
+  function goldGraph(points) {
+    const players = [...new Set(points.map((p) => p.who))];
+    const W = 640, H = 132, padL = 12, padR = 12, top = 26, bottom = 30;
+    const vals = points.map((p) => p.gold);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (hi === lo) { lo -= 1; hi += 1; }
+    const x = (i) => padL + 40 + (points.length === 1 ? 0 : i * (W - padL - padR - 80) / (points.length - 1));
+    const y = (v) => top + (hi - v) * (H - top - bottom) / (hi - lo);
+    const room = Math.max(8, Math.floor((points.length === 1 ? 200 : (W - padL - padR - 80) / (points.length - 1)) / 5.6));
+    const g = svg('svg', { viewBox: `0 0 ${W} ${H}`, class: 'fc-graph', role: 'img', 'aria-label': 'Gold balance after each balance check' });
+    [0, 1].forEach((t) => {
+      const yy = top + t * (H - top - bottom);
+      g.append(svg('line', { x1: padL, x2: W - padR, y1: yy, y2: yy, class: 'fc-grid' }));
+    });
+    players.forEach((who, pi) => {
+      const mine = points.map((p, i) => ({ p, i })).filter((o) => o.p.who === who);
+      const cls = 'fc-line p' + (pi % 3);
+      if (mine.length > 1) g.append(svg('polyline', { points: mine.map((o) => `${x(o.i)},${y(o.p.gold)}`).join(' '), class: cls, fill: 'none' }));
+      mine.forEach((o, k) => {
+        const prev = k ? mine[k - 1].p.gold : null;
+        const delta = prev === null ? '' : o.p.gold - prev;
+        g.append(svg('circle', { cx: x(o.i), cy: y(o.p.gold), r: 4, class: cls }));
+        g.append(svg('text', { x: x(o.i), y: y(o.p.gold) - 9, class: 'fc-val', 'text-anchor': 'middle' }, fmtNum(o.p.gold)));
+        if (delta !== '') {
+          g.append(svg('text', { x: x(o.i), y: H - 16, class: 'fc-delta ' + (delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat'), 'text-anchor': 'middle' },
+            `${who} ${delta > 0 ? '+' : ''}${fmtNum(delta)}`));
+        } else {
+          g.append(svg('text', { x: x(o.i), y: H - 16, class: 'fc-delta flat', 'text-anchor': 'middle' }, `${who} start`));
+        }
+        g.append(svg('text', { x: x(o.i), y: H - 3, class: 'fc-step', 'text-anchor': 'middle' }, o.p.step.length > room ? o.p.step.slice(0, room - 1) + '…' : o.p.step));
+      });
+    });
+    const legend = h('div.fc-legend', {}, h('span', { text: 'Gold after each balance check' }),
+      players.map((who, pi) => h('span.fc-key', { class: 'p' + (pi % 3), text: who })));
+    return h('div.fc-graphbox', {}, legend, h('div.fc-graphscroll', {}, g));
+  }
+  const fmtNum = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
+
+  /** Every flow as a chain of steps, coloured live as the runner reaches them. */
+  function flowChart(rows, phase, folder, onPick) {
+    const base = folder ? (M.parentsOf(S.coll.data.item, folder) || []).length + 1 : 0;
+    const groups = [];
+    rows.forEach((r) => {
+      const trail = (M.parentsOf(S.coll.data.item, r.it) || []).slice(base);
+      const key = trail.length ? trail[0].id : '_';
+      let g = groups.find((x) => x.key === key);
+      if (!g) groups.push((g = { key, name: trail.length ? trail[0].name : (folder ? folder.name : 'Requests'), rows: [] }));
+      g.rows.push(r);
+    });
+    const icon = { queued: '', running: '', pass: '✓', fail: '✕', skip: '–' };
+    return h('div.fc', {}, groups.map((g) => {
+      const on = g.rows.filter((r) => r.on);
+      const n = (st) => on.filter((r) => r.state === st).length;
+      const failed = on.find((r) => r.state === 'fail');
+      const pill = phase === 'setup' ? { cls: 'idle', text: `${on.length} steps` }
+        : failed ? { cls: 'fail', text: 'Failed at: ' + failed.it.name }
+          : on.some((r) => r.state === 'running') ? { cls: 'run', text: 'Running' }
+            : on.length && on.every((r) => r.state === 'pass') ? { cls: 'pass', text: 'Passed' }
+              : n('pass') + n('skip') + n('fail') === 0 ? { cls: 'idle', text: phase === 'done' ? 'Not run' : 'Waiting' }
+                : { cls: 'idle', text: `${n('pass')} of ${on.length} passed` };
+      const points = [];
+      on.forEach((r) => { const b = balanceOf(r); if (b) points.push(Object.assign(b, { step: r.it.name })); });
+      return h('section.fc-flow', { class: 'fc-' + pill.cls },
+        h('header.fc-head', {},
+          h('b', { text: g.name }),
+          h('span.fc-pill', { class: pill.cls, text: pill.text, title: pill.text }),
+          phase === 'setup' ? '' : h('span.fc-count', {}, h('span.mk-verified', { text: `✓ ${n('pass')}` }), h('span.mk-failing', { text: ` ✕ ${n('fail')}` }), n('skip') ? h('span.faint', { text: ` – ${n('skip')}` }) : '')),
+        h('ol.fc-chain', {}, g.rows.map((r, i) => {
+          const method = (M.req(r.it).method || 'GET').toUpperCase();
+          const detail = stepDetail(r);
+          const ms = r.result && r.result.res && r.result.res.timeMs;
+          return h('li.fc-node', {
+            class: `st-${r.on ? r.state : 'off'}`, tabindex: 0,
+            title: `${r.it.name}${detail ? '\n' + detail : ''}${phase === 'done' ? '\n\nClick to open this request' : phase === 'setup' ? '\n\nClick to include or leave out' : ''}`,
+            onclick: () => onPick(r),
+            onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); onPick(r); } }
+          },
+            h('div.fc-top', {},
+              h('span.fc-num', { text: r.on && r.state !== 'queued' ? icon[r.state] : String(i + 1) }),
+              h('span.meth', { class: 'm-' + method, text: method.slice(0, 6) }),
+              ms ? h('span.fc-ms', { text: ms + ' ms' }) : ''),
+            h('div.fc-name', { text: r.it.name }),
+            detail ? h('div.fc-detail', { text: detail }) : '');
+        })),
+        points.length ? goldGraph(points) : '');
+    }));
+  }
+
   T.runDialog = function (folder) {
     if (!S.coll) return;
     const items = [];
@@ -192,6 +318,7 @@
     const isFlow = /\bflows?\b/i.test(title) || (folder && (M.parentsOf(S.coll.data.item, folder) || []).some((p) => /\bflows?\b/i.test(p.name)));
     rows.forEach((r) => { r.on = isFlow || !r.risk; });
     let phase = 'setup', stop = false, failedStop = false;
+    let view = isFlow ? (T.ls.get('runView', 'chart') === 'list' ? 'list' : 'chart') : 'list';
 
     const body = h('div.runner');
     const autoMark = h('input', { type: 'checkbox', id: 'run-automark', checked: true });
@@ -222,6 +349,26 @@
           h('div', {}, h('b', { text: phase === 'done' ? (failedStop ? 'Stopped at the first failure' : stop ? 'Stopped' : 'Finished') : `Running ${done.length + 1} of ${chosen.length}` }),
             h('span.run-sum', {}, h('span.mk-verified', { text: ` ✓ ${count('pass')}` }), h('span.mk-failing', { text: `  ✕ ${count('fail')}` }), h('span.faint', { text: `  – ${count('skip')} skipped` }))),
           phase === 'done' ? h('p.hint', { text: 'Click a row to open that request and its response.' }) : '');
+      const openRow = (r) => {
+        close();
+        M.parentsOf(S.coll.data.item, r.it).forEach((p) => S.open.add(p.id));
+        S.sel = r.it; T.renderTree(); T.renderEditor(); T.renderResponse();
+      };
+      const toggle = isFlow ? h('div.seg', { role: 'group', 'aria-label': 'View' },
+        ['chart', 'list'].map((v) => h('button', {
+          class: view === v ? 'on' : '', text: v === 'chart' ? '◇ Flow chart' : '☰ List', 'aria-pressed': String(view === v),
+          onclick: () => { view = v; T.ls.set('runView', v); draw(); }
+        }))) : '';
+      if (view === 'chart') {
+        body.replaceChildren(head, toggle, flowChart(rows, phase, folder, (r) => {
+          if (phase === 'setup') { r.on = !r.on; draw(); } else if (phase === 'done') openRow(r);
+        }));
+        startBtn.hidden = phase !== 'setup';
+        stopBtn.hidden = phase !== 'running';
+        const live = body.querySelector('.fc-node.st-running');
+        if (live) live.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return;
+      }
       const list = h('div.run-list', {}, rows.map((r) => {
         const method = (M.req(r.it).method || 'GET').toUpperCase();
         const parents = (M.parentsOf(S.coll.data.item, r.it) || []).slice(folder ? (M.parentsOf(S.coll.data.item, folder) || []).length + 1 : 0);
@@ -230,9 +377,7 @@
           onclick: () => {
             if (phase === 'setup') { r.on = !r.on; draw(); return; }
             if (phase !== 'done') return;
-            close();
-            M.parentsOf(S.coll.data.item, r.it).forEach((p) => S.open.add(p.id));
-            S.sel = r.it; T.renderTree(); T.renderEditor(); T.renderResponse();
+            openRow(r);
           }
         },
           phase === 'setup' ? h('input', { type: 'checkbox', checked: r.on, tabindex: -1, 'aria-label': 'Include ' + r.it.name }) : h('span.run-ico', { text: r.on ? icon[r.state] : '' }),
@@ -240,7 +385,7 @@
           h('span.run-name', {}, r.it.name, parents.length ? h('span.faint', { text: '  ' + parents.map((p) => p.name).join(' › ') }) : ''),
           h('span.run-why', { text: phase === 'setup' ? (r.risk ? '⚠ ' + r.risk : '') : (r.on ? r.reason : 'not selected'), title: r.reason || r.risk || '' }));
       }));
-      body.replaceChildren(head, list);
+      body.replaceChildren(head, toggle, list);
       startBtn.hidden = phase !== 'setup';
       stopBtn.hidden = phase !== 'running';
     };
@@ -248,6 +393,7 @@
     const close = T.modal(`Run: ${title}`, body, [
       { label: 'Close', run: (c) => c() }
     ], () => { stop = true; });
+    if (isFlow) document.querySelector('#overlay .modal').classList.add('wide');
     const footer = document.querySelector('#overlay .modal footer');
     footer.prepend(stopBtn, startBtn);
 
@@ -263,6 +409,7 @@
           if (stop) break;
           r.state = 'running'; draw();
           const result = await T.execute(r.it, { skipEmpty: true });
+          r.result = result;
           const j = T.judge(result);
           r.state = j.verdict; r.reason = j.reason;
           if (mark && j.verdict !== 'skip') await T.setMark(r.it, j.verdict === 'pass' ? 'verified' : 'failing', j.verdict === 'fail' ? 'Auto run: ' + j.reason : '', { quiet: true });
