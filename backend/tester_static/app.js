@@ -72,6 +72,8 @@
     saving: false, envSaving: false,
     remote: null,          // a newer saved version of the open collection, while there are unsaved edits here
     filter: '',
+    view: ls.get('view', 'apis') === 'flows' ? 'flows' : 'apis',   // sidebar tab: the API list, or the flows
+    flowSel: null,         // id of the flow shown in the Flows tab
     tab: 'params',
     mode: ls.get('mode', 'server'),
     verifyTls: ls.get('verifyTls', '1') === '1',
@@ -152,16 +154,21 @@
       type: 'search', placeholder: 'Filter requests', value: S.filter,
       oninput: () => { S.filter = R.filter.value.trim().toLowerCase(); T.renderTree(); }
     });
+    R.sideTabs = h('div.side-tabs', { role: 'tablist', 'aria-label': 'Sidebar' });
+    R.apiTools = h('div.side-tools', {}, R.filter,
+      h('button', { title: 'New request', text: '+ Request', onclick: () => T.addItem(M.newRequest(), T.targetFolder()) }),
+      h('button', { title: 'New folder', text: '+ Folder', onclick: () => T.addItem(M.newFolder(), T.targetFolder()) }));
+    R.flowTools = h('div.side-tools', {},
+      h('button.primary.grow', { text: '+ New flow', title: 'Line up APIs into a flow', onclick: () => T.flowBuilder && T.flowBuilder() }));
     R.side = h('aside.side', {},
-      h('div.side-tools', {}, R.filter,
-        h('button', { title: 'New request', text: '+ Request', onclick: () => T.addItem(M.newRequest(), T.targetFolder()) }),
-        h('button', { title: 'New folder', text: '+ Folder', onclick: () => T.addItem(M.newFolder(), T.targetFolder()) })),
+      R.sideTabs, R.apiTools, R.flowTools,
       R.statusBar = h('div.status-bar', { role: 'group', 'aria-label': 'Show requests by test status' }),
       R.tree);
     R.editor = h('section.editor');
     R.response = h('section.response');
+    R.work = h('div.work', {}, R.editor, R.response);
     R.banner = h('div.banner', { hidden: true });
-    document.getElementById('app').replaceChildren(R.top, R.banner, h('div.main', {}, R.side, h('div.work', {}, R.editor, R.response)));
+    document.getElementById('app').replaceChildren(R.top, R.banner, h('div.main', {}, R.side, R.work));
     T.startPolling();
   }
 
@@ -552,7 +559,7 @@
   function renderStatusBar() {
     if (!R.statusBar) return;
     if (!S.coll) { R.statusBar.replaceChildren(); return; }
-    const t = tally(S.coll.data.item);
+    const t = tally(T.apiItems());
     const chip = (key, label, n) => h('button', {
       class: 'st-chip st-' + key + (S.statusFilter === key ? ' on' : ''), 'aria-pressed': S.statusFilter === key ? 'true' : 'false',
       title: key === 'all' ? 'Show every request' : 'Show only: ' + (MARKS[key] ? MARKS[key].label : label),
@@ -570,8 +577,33 @@
     return [text.slice(0, i), h('mark', { text: text.slice(i, i + S.filter.length) }), text.slice(i + S.filter.length)];
   }
 
+  /** Top-level items of the API list — the Flows folder has its own tab. */
+  T.apiItems = () => (S.coll ? S.coll.data.item.filter((x) => !(T.isFlowsRoot && T.isFlowsRoot(x))) : []);
+
+  T.setView = function (view) {
+    if (S.view === view) return;
+    S.view = view; ls.set('view', view);
+    T.renderTree(); T.renderEditor(); T.renderResponse();
+  };
+
+  function renderSideChrome() {
+    if (!R.sideTabs) return;
+    const flows = S.coll && T.flowList ? T.flowList().length : 0;
+    const tab = (view, label) => h('button', {
+      role: 'tab', class: S.view === view ? 'on' : '', 'aria-selected': String(S.view === view), text: label,
+      onclick: () => T.setView(view)
+    });
+    R.sideTabs.replaceChildren(tab('apis', 'APIs'), tab('flows', `🧪 Flows${flows ? ' · ' + flows : ''}`));
+    R.apiTools.hidden = S.view !== 'apis';
+    R.flowTools.hidden = S.view !== 'flows';
+    R.statusBar.hidden = S.view !== 'apis';
+    R.work.classList.toggle('flows-view', S.view === 'flows');
+  }
+
   T.renderTree = function () {
     if (!R.tree) return;
+    renderSideChrome();
+    if (S.coll && S.view === 'flows' && T.renderFlowsSide) { treeRows = []; T.renderFlowsSide(R.tree); return; }
     if (!S.coll) {
       R.tree.replaceChildren(h('div.empty-tree', {},
         h('p', { text: 'No collection open.' }),
@@ -609,7 +641,7 @@
         }
       }
     };
-    draw(S.coll.data.item, 0, null);
+    draw(T.apiItems(), 0, null);
     treeRows = rows;
     if (!frag.childNodes.length) frag.append(h('div.empty-tree', { text: filtering() ? 'Nothing matches.' : 'Empty collection — add a request.' }));
     R.tree.replaceChildren(frag);
@@ -677,7 +709,7 @@
     if (M.isFolder(it)) {
       entries.push({ label: 'New request here', run: () => T.addItem(M.newRequest(), it) });
       entries.push({ label: 'New folder here', run: () => T.addItem(M.newFolder(), it) });
-      entries.push({ label: '▶ Run folder…', run: () => T.runDialog(it) });
+      entries.push({ label: '🚀 Run all tests…', run: () => T.runDialog(it) });
       entries.push('-');
     }
     entries.push({ label: 'Rename', run: () => { const n = prompt('Name', it.name); if (n && n.trim()) { it.name = n.trim(); T.markDirty(); T.renderTree(); T.renderEditor(); } } });
@@ -744,6 +776,7 @@
   /* ── editor ────────────────────────────────────────────────────────────── */
 
   T.renderEditor = function () {
+    if (S.coll && S.view === 'flows' && T.renderFlowsMain) return T.renderFlowsMain(R.editor);
     const it = S.sel;
     if (!S.coll || !it) {
       R.editor.replaceChildren(h('div.idle', { style: 'padding:40px 0' },
@@ -803,7 +836,7 @@
       h('div.inline', {},
         h('button', { text: '+ Request here', onclick: () => T.addItem(M.newRequest(), it) }),
         h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) }),
-        h('button.primary', { text: '▶ Run folder', title: 'Send every request in this folder in order and mark the results', onclick: () => T.runDialog(it) })),
+        h('button.primary', { text: '🚀 Run all tests', title: 'Send every request in this folder in order and mark the results', onclick: () => T.runDialog(it) })),
       R.tabs, R.tabBody
     );
     renderTabs(); renderTab();

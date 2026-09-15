@@ -257,6 +257,7 @@
   const fmtNum = (n) => Number(n).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
   /** Every flow as a chain of steps, coloured live as the runner reaches them. */
+  T.flowChart = (...a) => flowChart(...a);
   function flowChart(rows, phase, folder, onPick) {
     const base = folder ? (M.parentsOf(S.coll.data.item, folder) || []).length + 1 : 0;
     const groups = [];
@@ -324,7 +325,7 @@
     const autoMark = h('input', { type: 'checkbox', id: 'run-automark', checked: true });
     const stopOnFail = h('input', { type: 'checkbox', id: 'run-stopfail', checked: !!isFlow });
     const delay = h('input', { type: 'number', id: 'run-delay', min: 0, max: 10000, step: 100, value: 300, style: 'width:90px' });
-    const startBtn = h('button.primary', { text: '▶ Start' });
+    const startBtn = h('button.primary', { text: isFlow ? '▶ Start test' : '🚀 Run all tests' });
     const stopBtn = h('button', { text: 'Stop', hidden: true });
 
     const icon = { queued: '·', running: '…', pass: '✓', fail: '✕', skip: '–', stopped: '·' };
@@ -351,6 +352,7 @@
           phase === 'done' ? h('p.hint', { text: 'Click a row to open that request and its response.' }) : '');
       const openRow = (r) => {
         close();
+        if (S.view === 'flows' && T.stepDetail) return T.stepDetail(r.it);
         M.parentsOf(S.coll.data.item, r.it).forEach((p) => S.open.add(p.id));
         S.sel = r.it; T.renderTree(); T.renderEditor(); T.renderResponse();
       };
@@ -390,7 +392,7 @@
       stopBtn.hidden = phase !== 'running';
     };
 
-    const close = T.modal(`Run: ${title}`, body, [
+    const close = T.modal(isFlow ? `Flow test: ${title}` : `Run all tests: ${title}`, body, [
       { label: 'Close', run: (c) => c() }
     ], () => { stop = true; });
     if (isFlow) document.querySelector('#overlay .modal').classList.add('wide');
@@ -422,6 +424,7 @@
         S.sending = false;
         phase = 'done'; draw();
         T.renderTree(); T.renderMarkBar(); T.renderResponse();
+        if (S.view === 'flows') T.renderEditor();
       }
     };
     draw();
@@ -462,6 +465,8 @@
 
   T.renderResponse = function () {
     if (!R.response) return;
+    R.response.hidden = !!(S.coll && S.view === 'flows');
+    if (R.response.hidden) return;
     const it = S.sel;
     const r = it && !M.isFolder(it) ? S.results.get(it.id) : null;
     if (!r) {
