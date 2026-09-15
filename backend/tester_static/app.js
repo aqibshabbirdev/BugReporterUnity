@@ -581,37 +581,82 @@
       return;
     }
     const frag = document.createDocumentFragment();
-    const draw = (items, depth) => {
+    const rows = [];                      // what's on screen, top to bottom — the arrow keys walk this
+    const draw = (items, depth, parent) => {
       for (const it of items) {
         if (!matches(it)) continue;
+        rows.push({ it, parent });
         const pad = `padding-left:${8 + depth * 14}px`;
         const more = h('button.ghost.more', { text: '⋯', title: 'Actions', onclick: (ev) => { ev.stopPropagation(); T.itemMenu(ev.currentTarget, it); } });
         if (M.isFolder(it)) {
           const open = S.open.has(it.id) || filtering();
           const t = tally(it.item);
           frag.append(h('div.row', {
-            class: S.sel === it ? 'sel' : '', style: pad,
+            class: S.sel === it ? 'sel' : '', style: pad, 'data-id': it.id, role: 'treeitem', 'aria-expanded': open ? 'true' : 'false',
             onclick: () => { if (S.open.has(it.id) && S.sel === it) S.open.delete(it.id); else S.open.add(it.id); S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
           }, h('span.caret', { text: open ? '▾' : '▸' }), h('span.label', {}, highlight(it.name)),
             h('span.count', { title: `${t.verified} verified · ${t.failing} not working · ${t.pending} pending` },
               t.failing ? h('span.c-bad', { text: '✕' + t.failing + ' ' }) : '',
               t.verified ? h('span.c-ok', { text: t.verified }) : '', t.verified ? '/' : '', String(t.total)), more));
-          if (open) draw(it.item, depth + 1);
+          if (open) draw(it.item, depth + 1, it);
         } else {
           const method = (M.req(it).method || 'GET').toUpperCase();
           frag.append(h('div.row', {
-            class: S.sel === it ? 'sel' : '', style: pad, title: M.urlRaw(M.req(it)),
+            class: S.sel === it ? 'sel' : '', style: pad, title: M.urlRaw(M.req(it)), 'data-id': it.id, role: 'treeitem',
             onclick: () => { S.sel = it; T.renderTree(); T.renderEditor(); T.renderResponse(); }
           }, h('span.meth', { class: 'm-' + method, text: method.slice(0, 6) }), h('span.label', {}, highlight(it.name)),
             h('span.mk', { class: 'mk-' + statusOf(it), title: markTitle(it), 'aria-label': MARKS[statusOf(it)].label, text: MARKS[statusOf(it)].icon }), more));
         }
       }
     };
-    draw(S.coll.data.item, 0);
+    draw(S.coll.data.item, 0, null);
+    treeRows = rows;
     if (!frag.childNodes.length) frag.append(h('div.empty-tree', { text: filtering() ? 'Nothing matches.' : 'Empty collection — add a request.' }));
     R.tree.replaceChildren(frag);
     renderStatusBar();
   };
+
+  /* ── keyboard: arrows move through the tree ─────────────────────────────── */
+
+  // ↑ ↓ move between rows · → opens a folder, or steps into an open one · ← closes a folder, or jumps to
+  // the folder that holds the row. Ignored while typing in a field or with a dialog open.
+  let treeRows = [];
+
+  function selectRow(it) {
+    S.sel = it;
+    T.renderTree(); T.renderEditor(); T.renderResponse();
+    const row = R.tree.querySelector(`.row[data-id="${CSS.escape(it.id)}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+  }
+
+  document.addEventListener('keydown', (ev) => {
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(ev.key)) return;
+    if (!S.coll || !R.tree || ev.defaultPrevented || ev.metaKey || ev.ctrlKey || ev.altKey || ev.shiftKey) return;
+    const target = ev.target;
+    if (target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName) || target.isContentEditable)) return;
+    if (document.getElementById('overlay').childElementCount || document.querySelector('.menu')) return;
+    if (!treeRows.length) return;
+    ev.preventDefault();
+
+    const i = treeRows.findIndex((r) => r.it === S.sel);
+    const cur = i >= 0 ? treeRows[i] : null;
+    if (!cur) return selectRow(treeRows[ev.key === 'ArrowUp' ? treeRows.length - 1 : 0].it);
+
+    const folder = M.isFolder(cur.it);
+    const open = folder && (S.open.has(cur.it.id) || filtering());
+    if (ev.key === 'ArrowDown') {
+      if (i < treeRows.length - 1) selectRow(treeRows[i + 1].it);
+    } else if (ev.key === 'ArrowUp') {
+      if (i > 0) selectRow(treeRows[i - 1].it);
+    } else if (ev.key === 'ArrowRight') {
+      if (folder && !open) { S.open.add(cur.it.id); T.renderTree(); }
+      else if (folder && treeRows[i + 1] && treeRows[i + 1].parent === cur.it) selectRow(treeRows[i + 1].it);
+    } else if (folder && open && S.open.has(cur.it.id)) {
+      S.open.delete(cur.it.id); T.renderTree();
+    } else if (cur.parent) {
+      selectRow(cur.parent);
+    }
+  });
 
   /* ── menus ─────────────────────────────────────────────────────────────── */
 
