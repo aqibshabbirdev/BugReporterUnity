@@ -22,7 +22,14 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return r.json() as Promise<T>
 }
 
-export interface Me { id: string; email: string; role: string }
+export interface Me {
+  id: string; email: string; role: string
+  team_id: string; team_name: string; is_owner: boolean
+}
+export interface Member { id: string; email: string; role: string; created_at: number }
+export interface Invite { id: string; code: string; role: string; created_by: string; created_at: number; uses: number }
+export interface Team { id: string; name: string; members: Member[]; invites: Invite[] }
+export interface TeamSummary { id: string; name: string; created_at: number; members: number; projects: number }
 export interface Project { id: string; name: string; created_at: number; apiKey?: string }
 export interface Build {
   version: string; platform: string | null
@@ -62,6 +69,17 @@ export const api = {
   register: (email: string, password: string, invite: string) =>
     req<Me>('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, password, invite }) }),
   logout: () => req<{ ok: boolean }>('/api/auth/logout', { method: 'POST' }),
+
+  team: () => req<Team>('/api/team'),
+  renameTeam: (name: string) => req<{ ok: boolean; name: string }>('/api/team', { method: 'PATCH', body: JSON.stringify({ name }) }),
+  createInvite: (role: string) => req<Invite>('/api/team/invites', { method: 'POST', body: JSON.stringify({ role }) }),
+  revokeInvite: (id: string) => req<{ ok: boolean }>(`/api/team/invites/${id}`, { method: 'DELETE' }),
+  setMemberRole: (uid: string, role: string) =>
+    req<{ ok: boolean }>(`/api/team/members/${uid}`, { method: 'PATCH', body: JSON.stringify({ role }) }),
+  removeMember: (uid: string) => req<{ ok: boolean }>(`/api/team/members/${uid}`, { method: 'DELETE' }),
+  teams: () => req<TeamSummary[]>('/api/teams'),
+  createTeam: (name: string) =>
+    req<{ id: string; name: string; invite: Invite }>('/api/teams', { method: 'POST', body: JSON.stringify({ name }) }),
 
   projects: () => req<Project[]>('/api/projects'),
   createProject: (name: string) =>

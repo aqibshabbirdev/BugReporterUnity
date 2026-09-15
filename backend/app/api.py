@@ -1,7 +1,13 @@
-"""Dashboard API: session auth, issues, builds, comments, project settings.
+"""Dashboard API: session auth, teams, issues, builds, comments, project settings.
 
-Auth model (deliberately small for a single-team MVP):
-- First user to register becomes admin; registration then locks unless an admin creates an invite.
+Auth and tenancy:
+- Every account belongs to one team. A team sees only its own projects (and through them issues, builds,
+  attachments) and its own API-tester documents; anything of another team answers 404, never 403, so ids
+  can't be probed.
+- Joining needs an invite code made by a team admin (team_invites). The very first account on an empty
+  database creates the first team. BR_INVITE_CODE still works and joins the first team as a dev.
+- The owner (users.is_owner) can create teams and hand out their first admin invite, and sees only team
+  names and counts — not their data.
 - Session = opaque token in an HttpOnly cookie, 30 days.
 """
 import functools
@@ -37,8 +43,40 @@ def _project_of(iid: str):
     return row["project_id"] if row else None
 
 
+@lru_cache(maxsize=4096)
+def _team_of_project(pid: str):
+    """project id -> team id. A project never changes team, so this caches forever too."""
+    with db.connect() as conn:
+        row = conn.execute("SELECT team_id FROM projects WHERE id = ?", (pid,)).fetchone()
+    return row["team_id"] if row else None
+
+
+def _own_project(pid) -> bool:
+    return bool(pid) and _team_of_project(pid) == g.user["team_id"]
+
+
+def _own_issue(iid) -> bool:
+    return _own_project(_project_of(iid))
+
+
 _session_cache: dict[str, tuple[float, dict]] = {}
 SESSION_CACHE_TTL = 30      # seconds — a burst of asset requests shares one auth lookup
+
+
+def _forget_user(uid: str):
+    """Drop cached sessions of an account whose role or membership just changed."""
+    for token, (_exp, user) in list(_session_cache.items()):
+        if user["id"] == uid:
+            _session_cache.pop(token, None)
+
+
+def _me_json(user) -> dict:
+    return {"id": user["id"], "email": user["email"], "role": user["role"], "team_id": user["team_id"],
+            "team_name": user["team_name"], "is_owner": bool(user["is_owner"])}
+
+
+_ME_SQL = """SELECT u.id, u.email, u.role, u.team_id, u.is_owner, t.name AS team_name
+             FROM users u LEFT JOIN teams t ON t.id = u.team_id"""
 
 
 # ── auth plumbing ───────────────────────────────────────────────────────────
@@ -60,13 +98,11 @@ def require_user(fn):
                 return fn(*args, **kwargs)
             with db.connect() as conn:
                 row = conn.execute(
-                    """SELECT u.id, u.email, u.role FROM sessions s
-                       JOIN users u ON u.id = s.user_id
-                       WHERE s.token = ? AND s.expires_at > ?""",
+                    _ME_SQL + " JOIN sessions s ON s.user_id = u.id WHERE s.token = ? AND s.expires_at > ?",
                     (token, db.now()),
                 ).fetchone()
-            if row:
-                g.user = dict(row)
+            if row and row["team_id"]:
+                g.user = _me_json(row)
                 _session_cache[token] = (now + SESSION_CACHE_TTL, g.user)
                 return fn(*args, **kwargs)
         return jsonify(error="not signed in"), 401
@@ -78,29 +114,45 @@ def register():
     body = request.get_json(silent=True) or {}
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
-    invite = str(body.get("invite") or "")
+    invite = str(body.get("invite") or "").strip()
     if "@" not in email or len(password) < 8:
         return jsonify(error="valid email and a password of 8+ chars required"), 400
 
     with db.connect() as conn:
         first_user = conn.execute("SELECT COUNT(*) c FROM users").fetchone()["c"] == 0
-        if not first_user:
-            expected = os.environ.get("BR_INVITE_CODE", "")
-            if not expected or invite != expected:
-                return jsonify(error="registration is invite-only"), 403
+        is_owner = 0
+        if first_user:                                  # empty database: this account starts the first team
+            team_id, role, is_owner = db.new_id(), "admin", 1
+            conn.execute("INSERT INTO teams (id, name, created_at) VALUES (?,?,?)",
+                         (team_id, str(body.get("team") or db.DEFAULT_TEAM_NAME)[:80], db.now()))
+        else:
+            row = conn.execute("SELECT id, team_id, role FROM team_invites WHERE code = ?", (invite,)).fetchone() if invite else None
+            legacy = os.environ.get("BR_INVITE_CODE", "")
+            if row:
+                team_id, role = row["team_id"], row["role"]
+            elif legacy and invite == legacy:
+                first = conn.execute("SELECT id FROM teams ORDER BY created_at LIMIT 1").fetchone()
+                if not first:
+                    return jsonify(error="registration is invite-only"), 403
+                team_id, role = first["id"], "dev"
+            else:
+                return jsonify(error="registration needs a valid invite code from your team admin"), 403
         if conn.execute("SELECT 1 FROM users WHERE email = ?", (email,)).fetchone():
             return jsonify(error="email already registered"), 409
 
         uid = db.new_id()
         conn.execute(
-            "INSERT INTO users (id, email, pw_hash, role, created_at) VALUES (?,?,?,?,?)",
-            (uid, email, db.hash_password(password), "admin" if first_user else "dev", db.now()),
+            "INSERT INTO users (id, email, pw_hash, role, team_id, is_owner, created_at) VALUES (?,?,?,?,?,?,?)",
+            (uid, email, db.hash_password(password), role, team_id, is_owner, db.now()),
         )
+        if not first_user and row:
+            conn.execute("UPDATE team_invites SET uses = uses + 1 WHERE id = ?", (row["id"],))
         token = secrets.token_urlsafe(32)
         conn.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)",
                      (token, uid, db.now() + SESSION_TTL))
+        me = conn.execute(_ME_SQL + " WHERE u.id = ?", (uid,)).fetchone()
 
-    resp = jsonify(email=email, role="admin" if first_user else "dev")
+    resp = jsonify(_me_json(me))
     _set_session(resp, token)
     return resp, 201
 
@@ -111,13 +163,14 @@ def login():
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
     with db.connect() as conn:
-        user = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+        user = conn.execute("SELECT id, pw_hash FROM users WHERE email = ?", (email,)).fetchone()
         if user is None or not db.verify_password(password, user["pw_hash"]):
             return jsonify(error="wrong email or password"), 401
         token = secrets.token_urlsafe(32)
         conn.execute("INSERT INTO sessions (token, user_id, expires_at) VALUES (?,?,?)",
                      (token, user["id"], db.now() + SESSION_TTL))
-    resp = jsonify(email=user["email"], role=user["role"])
+        me = conn.execute(_ME_SQL + " WHERE u.id = ?", (user["id"],)).fetchone()
+    resp = jsonify(_me_json(me))
     _set_session(resp, token)
     return resp
 
@@ -140,13 +193,156 @@ def me():
     return jsonify(g.user)
 
 
+# ── team (members + invites) ────────────────────────────────────────────────
+
+INVITE_ROLES = ("dev", "admin")
+
+
+def _admin_only():
+    return None if g.user["role"] == "admin" else (jsonify(error="only a team admin can do this"), 403)
+
+
+@bp.get("/api/team")
+@require_user
+def get_team():
+    tid = g.user["team_id"]
+    with db.connect() as conn:
+        members = conn.execute(
+            "SELECT id, email, role, created_at FROM users WHERE team_id = ? ORDER BY created_at", (tid,)
+        ).fetchall()
+        invites = conn.execute(
+            "SELECT id, code, role, created_by, created_at, uses FROM team_invites WHERE team_id = ? ORDER BY created_at DESC",
+            (tid,),
+        ).fetchall() if g.user["role"] == "admin" else []
+    return jsonify(id=tid, name=g.user["team_name"], members=[dict(m) for m in members],
+                   invites=[dict(i) for i in invites])
+
+
+@bp.patch("/api/team")
+@require_user
+def rename_team():
+    if (denied := _admin_only()):
+        return denied
+    name = str((request.get_json(silent=True) or {}).get("name") or "").strip()[:80]
+    if not name:
+        return jsonify(error="name required"), 400
+    with db.connect() as conn:
+        conn.execute("UPDATE teams SET name = ? WHERE id = ?", (name, g.user["team_id"]))
+    _session_cache.clear()                       # team_name is part of every cached session
+    return jsonify(ok=True, name=name)
+
+
+def _new_invite(conn, team_id: str, role: str) -> dict:
+    inv = {"id": db.new_id(), "code": "join-" + secrets.token_hex(6), "role": role,
+           "created_by": g.user["email"], "created_at": db.now(), "uses": 0}
+    conn.execute("INSERT INTO team_invites (id, team_id, code, role, created_by, created_at) VALUES (?,?,?,?,?,?)",
+                 (inv["id"], team_id, inv["code"], role, inv["created_by"], inv["created_at"]))
+    return inv
+
+
+@bp.post("/api/team/invites")
+@require_user
+def create_invite():
+    if (denied := _admin_only()):
+        return denied
+    role = (request.get_json(silent=True) or {}).get("role") or "dev"
+    if role not in INVITE_ROLES:
+        return jsonify(error="role must be dev or admin"), 400
+    with db.connect() as conn:
+        inv = _new_invite(conn, g.user["team_id"], role)
+    return jsonify(inv), 201
+
+
+@bp.delete("/api/team/invites/<inv_id>")
+@require_user
+def revoke_invite(inv_id):
+    if (denied := _admin_only()):
+        return denied
+    with db.connect() as conn:
+        n = conn.execute("DELETE FROM team_invites WHERE id = ? AND team_id = ?", (inv_id, g.user["team_id"])).rowcount
+    return (jsonify(ok=True), 200) if n else (jsonify(error="not found"), 404)
+
+
+@bp.patch("/api/team/members/<uid>")
+@require_user
+def set_member_role(uid):
+    if (denied := _admin_only()):
+        return denied
+    role = (request.get_json(silent=True) or {}).get("role")
+    if role not in INVITE_ROLES:
+        return jsonify(error="role must be dev or admin"), 400
+    if uid == g.user["id"]:
+        return jsonify(error="ask another admin to change your own role"), 400
+    with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM users WHERE id = ? AND team_id = ?", (uid, g.user["team_id"])).fetchone():
+            return jsonify(error="not found"), 404
+        conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, uid))
+    _forget_user(uid)
+    return jsonify(ok=True)
+
+
+@bp.delete("/api/team/members/<uid>")
+@require_user
+def remove_member(uid):
+    if (denied := _admin_only()):
+        return denied
+    if uid == g.user["id"]:
+        return jsonify(error="you can't remove yourself"), 400
+    with db.connect() as conn:
+        row = conn.execute("SELECT is_owner FROM users WHERE id = ? AND team_id = ?", (uid, g.user["team_id"])).fetchone()
+        if not row:
+            return jsonify(error="not found"), 404
+        if row["is_owner"]:
+            return jsonify(error="the owner account can't be removed"), 400
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (uid,))
+        conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+    _forget_user(uid)
+    return jsonify(ok=True)
+
+
+# ── teams (owner only: create teams; sees names and counts, not their data) ───
+
+@bp.get("/api/teams")
+@require_user
+def list_teams():
+    if not g.user["is_owner"]:
+        return jsonify(error="owner only"), 403
+    with db.connect() as conn:
+        rows = conn.execute(
+            """SELECT t.id, t.name, t.created_at,
+                      (SELECT COUNT(*) FROM users u WHERE u.team_id = t.id) AS members,
+                      (SELECT COUNT(*) FROM projects p WHERE p.team_id = t.id) AS projects
+               FROM teams t ORDER BY t.created_at"""
+        ).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@bp.post("/api/teams")
+@require_user
+def create_team():
+    if not g.user["is_owner"]:
+        return jsonify(error="owner only"), 403
+    name = str((request.get_json(silent=True) or {}).get("name") or "").strip()[:80]
+    if not name:
+        return jsonify(error="name required"), 400
+    tid = db.new_id()
+    with db.connect() as conn:
+        if conn.execute("SELECT 1 FROM teams WHERE name = ?", (name,)).fetchone():
+            return jsonify(error="a team with that name already exists"), 409
+        conn.execute("INSERT INTO teams (id, name, created_at) VALUES (?,?,?)", (tid, name, db.now()))
+        inv = _new_invite(conn, tid, "admin")
+    # The owner is not a member of the new team: this admin invite is the one way in.
+    return jsonify(id=tid, name=name, invite=inv), 201
+
+
 # ── projects ────────────────────────────────────────────────────────────────
 
 @bp.get("/api/projects")
 @require_user
 def list_projects():
     with db.connect() as conn:
-        rows = conn.execute("SELECT id, name, created_at FROM projects ORDER BY created_at").fetchall()
+        rows = conn.execute("SELECT id, name, created_at FROM projects WHERE team_id = ? ORDER BY created_at",
+                            (g.user["team_id"],)).fetchall()
     return jsonify([dict(r) for r in rows])
 
 
@@ -161,8 +357,8 @@ def create_project():
     key = db.make_api_key()
     pid = db.new_id()
     with db.connect() as conn:
-        conn.execute("INSERT INTO projects (id, name, api_key_hash, created_at) VALUES (?,?,?,?)",
-                     (pid, name, db.hash_api_key(key), db.now()))
+        conn.execute("INSERT INTO projects (id, name, api_key_hash, team_id, created_at) VALUES (?,?,?,?,?)",
+                     (pid, name, db.hash_api_key(key), g.user["team_id"], db.now()))
     # The one and only time the plaintext key leaves the server.
     return jsonify(id=pid, name=name, apiKey=key), 201
 
@@ -174,7 +370,12 @@ def create_project():
 def storage():
     from . import retention
     clip_days, full_days = retention.retain_days()
-    return jsonify(bytes=retention.usage_bytes(), clip_days=clip_days, retain_days=full_days)
+    return jsonify(bytes=retention.usage_bytes(_team_project_ids()), clip_days=clip_days, retain_days=full_days)
+
+
+def _team_project_ids():
+    with db.connect() as conn:
+        return [r["id"] for r in conn.execute("SELECT id FROM projects WHERE team_id = ?", (g.user["team_id"],)).fetchall()]
 
 
 @bp.post("/api/storage/cleanup")
@@ -183,8 +384,8 @@ def storage_cleanup():
     if g.user["role"] != "admin":
         return jsonify(error="admin only"), 403
     from . import retention
-    out = retention.purge()
-    out["bytes"] = retention.usage_bytes()
+    out = retention.purge()                  # same retention rules for every team; only expired files go
+    out["bytes"] = retention.usage_bytes(_team_project_ids())
     return jsonify(out)
 
 
@@ -195,8 +396,8 @@ def rotate_key(pid):
         return jsonify(error="admin only"), 403
     key = db.make_api_key()
     with db.connect() as conn:
-        changed = conn.execute("UPDATE projects SET api_key_hash = ? WHERE id = ?",
-                               (db.hash_api_key(key), pid)).rowcount
+        changed = conn.execute("UPDATE projects SET api_key_hash = ? WHERE id = ? AND team_id = ?",
+                               (db.hash_api_key(key), pid, g.user["team_id"])).rowcount
     if not changed:
         return jsonify(error="no such project"), 404
     return jsonify(apiKey=key)
@@ -264,6 +465,8 @@ INCIDENT_WINDOW = 120
 @bp.get("/api/projects/<pid>/issues")
 @require_user
 def list_issues(pid):
+    if not _own_project(pid):
+        return jsonify(error="not found"), 404
     q = "SELECT id, title, severity, status, fixed_in_build, build_version, game, session, platform, has_screenshot, created_at FROM issues WHERE project_id = ?"
     params: list = [pid]
     if request.args.get("build"):
@@ -281,6 +484,8 @@ def list_issues(pid):
 @bp.get("/api/issues/<iid>")
 @require_user
 def issue_detail(iid):
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
     with db.connect() as conn:
         row = conn.execute("SELECT * FROM issues WHERE id = ?", (iid,)).fetchone()
         if row is None:
@@ -319,6 +524,8 @@ def issue_detail(iid):
 @bp.patch("/api/issues/<iid>")
 @require_user
 def update_issue(iid):
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
     body = request.get_json(silent=True) or {}
     status = body.get("status")
     if status not in STATUSES:
@@ -350,6 +557,8 @@ def update_issue(iid):
 @bp.patch("/api/issues/<iid>/notes")
 @require_user
 def set_notes(iid):
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
     # Dev-written test case — a separate field from the tester's in-game note (description), so saving it
     # never overwrites what the tester originally reported.
     notes = str((request.get_json(silent=True) or {}).get("notes") or "")[:4000]
@@ -363,6 +572,8 @@ def set_notes(iid):
 @bp.delete("/api/issues/<iid>")
 @require_user
 def delete_issue(iid):
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
     # Deletion is guarded by a confirm code on top of the login, so a stray click can't wipe a report.
     # Default is "Queen@21"; override with the BR_DELETE_CODE env var for a private one.
     code = str((request.get_json(silent=True) or {}).get("code") or "")
@@ -382,6 +593,8 @@ def delete_issue(iid):
 @bp.post("/api/issues/<iid>/comments")
 @require_user
 def add_comment(iid):
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
     text = str((request.get_json(silent=True) or {}).get("text") or "").strip()[:2000]
     if not text:
         return jsonify(error="text required"), 400
@@ -397,7 +610,7 @@ def add_comment(iid):
 
 def _attachment(iid: str, filename: str):
     pid = _project_of(iid)
-    if pid is None:
+    if pid is None or not _own_project(pid):
         return jsonify(error="not found"), 404
     # Path is built from validated DB ids + a fixed filename — no client-supplied path parts.
     path = os.path.join(UPLOAD_ROOT, pid, iid, filename)
@@ -415,6 +628,8 @@ def screenshot(iid):
 @bp.get("/api/issues/<iid>/thumb.jpg")
 @require_user
 def thumb(iid):
+    if not _own_issue(iid):
+        return jsonify(error="not found"), 404
     # Small grid preview. Reports from the updated SDK ship a thumb.jpg; older ones fall back to the full
     # screenshot so nothing 404s (they're just heavier until re-reported).
     with db.connect() as conn:
@@ -437,7 +652,7 @@ def logs(iid):
 
 def _clip_dir(iid: str):
     pid = _project_of(iid)                    # cached — a clip is hundreds of frame requests
-    return os.path.join(UPLOAD_ROOT, pid, iid, "clip") if pid else None
+    return os.path.join(UPLOAD_ROOT, pid, iid, "clip") if pid and _own_project(pid) else None
 
 
 @bp.get("/api/issues/<iid>/clip")
@@ -477,6 +692,8 @@ def clip_frame(iid, n):
 @bp.get("/api/projects/<pid>/builds")
 @require_user
 def list_builds(pid):
+    if not _own_project(pid):
+        return jsonify(error="not found"), 404
     with db.connect() as conn:
         rows = conn.execute(
             """SELECT version, platform, first_seen_at, report_count,
@@ -494,6 +711,8 @@ def list_builds(pid):
 @bp.get("/api/projects/<pid>/games")
 @require_user
 def list_games(pid):
+    if not _own_project(pid):
+        return jsonify(error="not found"), 404
     with db.connect() as conn:
         rows = conn.execute(
             """SELECT game,

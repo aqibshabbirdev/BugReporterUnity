@@ -105,6 +105,24 @@ _SCHEMA = [
         role       VARCHAR(10) NOT NULL DEFAULT 'dev',
         created_at BIGINT NOT NULL
     )""",
+    # Teams: every user, project and API-tester document belongs to exactly one team (team_id columns,
+    # added in _migrate), and every read is filtered by the signed-in user's team.
+    """CREATE TABLE IF NOT EXISTS teams (
+        id         VARCHAR(32) PRIMARY KEY,
+        name       VARCHAR(80) NOT NULL,
+        created_at BIGINT NOT NULL
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # Reusable join codes; registering with one puts the new account in that team with that role.
+    """CREATE TABLE IF NOT EXISTS team_invites (
+        id         VARCHAR(32) PRIMARY KEY,
+        team_id    VARCHAR(32) NOT NULL,
+        code       VARCHAR(40) NOT NULL UNIQUE,
+        role       VARCHAR(10) NOT NULL DEFAULT 'dev',
+        created_by VARCHAR(190) NOT NULL,
+        created_at BIGINT NOT NULL,
+        uses       INT NOT NULL DEFAULT 0,
+        KEY idx_team_invites_team (team_id)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS sessions (
         token      VARCHAR(64) PRIMARY KEY,
         user_id    VARCHAR(32) NOT NULL,
@@ -181,6 +199,16 @@ _SCHEMA = [
 ]
 
 
+DEFAULT_TEAM_NAME = os.environ.get("BR_DEFAULT_TEAM_NAME", "Games Panda")
+
+
+def _has_column(conn, table: str, column: str) -> bool:
+    return bool(conn.execute(
+        """SELECT COUNT(*) c FROM information_schema.columns
+           WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?""", (table, column)
+    ).fetchone()["c"])
+
+
 def init_db():
     with connect() as conn:
         for stmt in _SCHEMA:
@@ -238,14 +266,40 @@ def _migrate(conn):
     conn.execute("UPDATE issues SET status = 'waiting_for_test' WHERE status = 'fixed_in_build'")
     conn.execute("UPDATE issues SET status = 'closed' WHERE status IN ('verified', 'wont_fix')")
 
-    # utf8mb4 everywhere. CREATE TABLE takes the database's default charset, and MariaDB on cPanel
-    # defaults to 3-byte utf8 — which rejects any 4-byte character (a tester's emoji in a title →
-    # error 1366 → the whole report 500s). MySQL 8 on Wasmer defaulted to utf8mb4, so this only
-    # surfaced after the move. Convert whatever isn't utf8mb4 yet; tables already on it match no rows.
+    # Teams. Before teams existed everything belonged to one implicit team: add the team_id columns, put
+    # every existing row in the first team (created here, named DEFAULT_TEAM_NAME), and make the oldest
+    # admin the owner — the one account that can create further teams.
+    for table, column, ddl in (
+        ("users", "team_id", "ALTER TABLE users ADD COLUMN team_id VARCHAR(32) NULL"),
+        ("users", "is_owner", "ALTER TABLE users ADD COLUMN is_owner TINYINT NOT NULL DEFAULT 0"),
+        ("projects", "team_id", "ALTER TABLE projects ADD COLUMN team_id VARCHAR(32) NULL, ADD KEY idx_projects_team (team_id)"),
+        ("tester_docs", "team_id", "ALTER TABLE tester_docs ADD COLUMN team_id VARCHAR(32) NULL, ADD KEY idx_tester_docs_team (team_id, kind, name)"),
+    ):
+        if not _has_column(conn, table, column):
+            conn.execute(ddl)
+    teamless = [t for t in ("users", "projects", "tester_docs")
+                if conn.execute(f"SELECT 1 FROM {t} WHERE team_id IS NULL LIMIT 1").fetchone()]
+    if teamless:
+        first = conn.execute("SELECT id FROM teams ORDER BY created_at LIMIT 1").fetchone()
+        team_id = first["id"] if first else new_id()
+        if not first:
+            conn.execute("INSERT INTO teams (id, name, created_at) VALUES (?,?,?)", (team_id, DEFAULT_TEAM_NAME, now()))
+        for t in teamless:
+            conn.execute(f"UPDATE {t} SET team_id = ? WHERE team_id IS NULL", (team_id,))
+    if not conn.execute("SELECT 1 FROM users WHERE is_owner = 1 LIMIT 1").fetchone():
+        admin = conn.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1").fetchone()
+        if admin:
+            conn.execute("UPDATE users SET is_owner = 1 WHERE id = ?", (admin["id"],))
+
+    # utf8mb4 everywhere, in one collation. CREATE TABLE takes the database's default charset, and MariaDB
+    # on cPanel defaults to 3-byte utf8 — which rejects any 4-byte character (a tester's emoji in a title →
+    # error 1366 → the whole report 500s). And team_id joins compare columns across tables, which MySQL
+    # refuses when one is utf8mb4_unicode_ci (our explicit tables) and the other its utf8mb4_0900_ai_ci
+    # default. Convert whatever isn't utf8mb4_unicode_ci yet; tables already on it match no rows.
     for row in conn.execute(
         """SELECT table_name AS t FROM information_schema.tables
            WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE'
-             AND table_collation NOT LIKE 'utf8mb4%'"""
+             AND table_collation <> 'utf8mb4_unicode_ci'"""
     ).fetchall():
         conn.execute(f"ALTER TABLE `{row['t']}` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 

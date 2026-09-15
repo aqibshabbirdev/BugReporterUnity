@@ -283,6 +283,28 @@ cd dashboard && npm install && npm run build   # outputs into ../backend/static
 git add ../backend/static && git commit && git push   # push = deploy
 ```
 
+## 6a. Teams — one app, separate data per team
+
+Every account belongs to one team (`users.team_id`), and so does every project (`projects.team_id`) and
+API-tester document (`tester_docs.team_id`). Issues, builds, attachments, comments and test marks belong to
+a team through their project or collection. Every dashboard and tester endpoint filters by the signed-in
+user's team; another team's id answers **404** (not 403), so ids can't be probed. The report endpoint
+needs no change — the API key already names the project, and the project names the team.
+
+- **Joining:** register with an invite code from `team_invites`. A team admin makes codes on the dashboard's
+  **Team** page (top-bar chip), picks whether the code joins as dev or admin, and can revoke it. The very
+  first account on an empty database creates the first team. The old `BR_INVITE_CODE` still works and
+  joins the first team as a dev.
+- **Owner:** `users.is_owner` (the oldest admin when teams were introduced). The owner can create teams on
+  the Team page and gets that team's first **admin** invite code. The owner is not a member of teams it
+  creates and sees only their names and member/project counts.
+- **Team admins** can rename the team, change members' roles and remove members (their sessions end at once).
+- **Migration:** `db._migrate` adds the columns, puts every pre-existing row in a team named
+  `BR_DEFAULT_TEAM_NAME` (default "Games Panda"), and marks the oldest admin as owner. It also normalises
+  every table to `utf8mb4_unicode_ci`, because cross-table team joins fail on mixed collations.
+- Retention rules (and "Clean up now") are the same for every team; the storage figure counts only your
+  team's projects.
+
 ## 6b. API tester — `/apitestingbruno`
 
 A small Postman-style page for the team's API collections, on the same app and sign-in as the dashboard

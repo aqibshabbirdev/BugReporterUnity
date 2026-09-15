@@ -12,6 +12,9 @@ stable `id` (_ensure_item_ids): the merge matches requests and folders across ve
 Test marks (tester_marks) are kept outside the documents: marking a request verified or not working is
 one small write that doesn't bump the collection's version, so it never turns into a merge.
 
+Everything here belongs to the signed-in user's team (tester_docs.team_id; marks through their
+collection): another team's document answers 404.
+
 Same sign-in as the dashboard (the br_session cookie). Requests either go straight from the browser, or
 through /api/tester/send — see tester_send.py for what the server refuses to reach.
 """
@@ -130,8 +133,8 @@ def _summary(row):
 def list_docs(kind):
     with db.connect() as conn:
         rows = conn.execute(
-            "SELECT id, name, version, updated_at, updated_by FROM tester_docs WHERE kind = ? ORDER BY name",
-            (_kind(kind),),
+            "SELECT id, name, version, updated_at, updated_by FROM tester_docs WHERE kind = ? AND team_id = ? ORDER BY name",
+            (_kind(kind), g.user["team_id"]),
         ).fetchall()
     return jsonify([_summary(r) for r in rows])
 
@@ -148,9 +151,9 @@ def create_doc(kind):
     doc_id, ts = db.new_id(), db.now()
     with db.connect() as conn:
         conn.execute(
-            """INSERT INTO tester_docs (id, kind, name, data, version, created_at, updated_at, updated_by)
-               VALUES (?,?,?,?,1,?,?,?)""",
-            (doc_id, kind, name, text, ts, ts, g.user["email"]),
+            """INSERT INTO tester_docs (id, kind, name, data, version, created_at, updated_at, updated_by, team_id)
+               VALUES (?,?,?,?,1,?,?,?,?)""",
+            (doc_id, kind, name, text, ts, ts, g.user["email"], g.user["team_id"]),
         )
     return jsonify(id=doc_id, name=name, version=1, updatedAt=ts, updatedBy=g.user["email"]), 201
 
@@ -160,8 +163,8 @@ def create_doc(kind):
 def get_doc(kind, doc_id):
     with db.connect() as conn:
         row = conn.execute(
-            "SELECT id, name, data, version, updated_at, updated_by FROM tester_docs WHERE kind = ? AND id = ?",
-            (_kind(kind), doc_id),
+            "SELECT id, name, data, version, updated_at, updated_by FROM tester_docs WHERE kind = ? AND id = ? AND team_id = ?",
+            (_kind(kind), doc_id, g.user["team_id"]),
         ).fetchone()
     if not row:
         return jsonify(error="not found"), 404
@@ -206,12 +209,13 @@ def save_doc(kind, doc_id):
     with db.connect() as conn:
         cur = conn.execute(
             """UPDATE tester_docs SET name = ?, data = ?, version = version + 1, updated_at = ?, updated_by = ?
-               WHERE kind = ? AND id = ? AND version = ?""",
-            (name, text, ts, g.user["email"], kind, doc_id, base_version),
+               WHERE kind = ? AND id = ? AND version = ? AND team_id = ?""",
+            (name, text, ts, g.user["email"], kind, doc_id, base_version, g.user["team_id"]),
         )
         if cur.rowcount == 0:
             row = conn.execute(
-                "SELECT version, updated_by FROM tester_docs WHERE kind = ? AND id = ?", (kind, doc_id)
+                "SELECT version, updated_by FROM tester_docs WHERE kind = ? AND id = ? AND team_id = ?",
+                (kind, doc_id, g.user["team_id"])
             ).fetchone()
             if not row:
                 return jsonify(error="not found"), 404
@@ -227,7 +231,8 @@ def delete_doc(kind, doc_id):
     if g.user["role"] != "admin":
         return jsonify(error="only an admin can delete a shared " + kind[:-1]), 403
     with db.connect() as conn:
-        cur = conn.execute("DELETE FROM tester_docs WHERE kind = ? AND id = ?", (_kind(kind), doc_id))
+        cur = conn.execute("DELETE FROM tester_docs WHERE kind = ? AND id = ? AND team_id = ?",
+                           (_kind(kind), doc_id, g.user["team_id"]))
         if kind == "collections":
             conn.execute("DELETE FROM tester_marks WHERE collection_id = ?", (doc_id,))
     if cur.rowcount == 0:
@@ -249,6 +254,9 @@ def _mark_json(row):
 @require_user
 def list_marks(coll_id):
     with db.connect() as conn:
+        if not conn.execute("SELECT 1 FROM tester_docs WHERE kind = 'collections' AND id = ? AND team_id = ?",
+                            (coll_id, g.user["team_id"])).fetchone():
+            return jsonify(error="not found"), 404
         rows = conn.execute(
             """SELECT item_id, status, note, response_code, marked_by, marked_at
                FROM tester_marks WHERE collection_id = ?""", (coll_id,)
@@ -273,7 +281,8 @@ def set_mark(coll_id, item_id):
     note = str(body.get("note") or "")[:2000]
     ts = db.now()
     with db.connect() as conn:
-        if not conn.execute("SELECT 1 FROM tester_docs WHERE kind = 'collections' AND id = ?", (coll_id,)).fetchone():
+        if not conn.execute("SELECT 1 FROM tester_docs WHERE kind = 'collections' AND id = ? AND team_id = ?",
+                            (coll_id, g.user["team_id"])).fetchone():
             return jsonify(error="not found"), 404
         if status == "pending":
             conn.execute("DELETE FROM tester_marks WHERE collection_id = ? AND item_id = ?", (coll_id, item_id))

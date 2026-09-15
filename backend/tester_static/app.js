@@ -202,7 +202,7 @@
         h('button.ghost', { text: '⋯', title: 'Collection actions', onclick: (ev) => T.collMenu(ev.currentTarget) })),
       h('div.group', {}, envSel, h('button', { text: 'Variables', onclick: () => T.envDialog() })),
       h('span.grow'),
-      h('div.group', {}, R.saved, R.saveBtn, h('span.faint.who', { text: S.me.email }), h('a', { href: '/', text: 'Dashboard' }))
+      h('div.group', {}, R.saved, R.saveBtn, h('span.faint.who', { text: (S.me.team_name ? S.me.team_name + ' · ' : '') + S.me.email, title: 'Collections and environments here belong to this team' }), h('a', { href: '/', text: 'Dashboard' }))
     );
     T.renderSaveState();
   };

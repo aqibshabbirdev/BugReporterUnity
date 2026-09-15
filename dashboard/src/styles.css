@@ -46,6 +46,11 @@ a:hover { text-decoration: underline; }
 .topbar .brand { font-weight: 700; font-size: 16px; color: var(--text); letter-spacing: -0.01em; }
 .topbar .crumb { color: var(--muted); }
 .topbar .spacer { flex: 1; }
+.team-chip { font-size: 12px; font-weight: 600; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.team-chip:hover { color: var(--text); border-color: var(--faint); text-decoration: none; }
+.role-badge { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 2px 8px; border-radius: 999px; background: var(--bg3); color: var(--muted); }
+.role-badge.admin { background: rgba(31,111,235,.16); color: #79b8ff; }
+.code-pill { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 13px; background: var(--bg); border: 1px solid var(--border-soft); border-radius: 6px; padding: 3px 8px; }
 .page { max-width: none; margin: 0 auto; padding: 24px 32px 64px; }
 .page h1 { font-size: 22px; margin: 0 0 20px; letter-spacing: -0.02em; }
 .row { display: flex; gap: 10px; align-items: center; }

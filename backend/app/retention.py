@@ -69,9 +69,11 @@ def purge() -> dict:
             "clip_days": clip_days, "retain_days": full_days}
 
 
-def usage_bytes() -> int:
+def usage_bytes(project_ids=None) -> int:
+    """Bytes on disk — for the given projects only (one team's), or everything when None."""
+    roots = [UPLOAD_ROOT] if project_ids is None else [os.path.join(UPLOAD_ROOT, pid) for pid in project_ids]
     total = 0
-    for root, _dirs, files in os.walk(UPLOAD_ROOT):
+    for root, _dirs, files in (w for r in roots for w in os.walk(r)):
         for name in files:
             try:
                 total += os.path.getsize(os.path.join(root, name))
