@@ -41,7 +41,133 @@
    * opts.skipEmpty: don't send when a variable in the URL or Authorization header is empty — the runner
    * uses it so "not logged in yet" is reported as skipped, not as a broken API.
    */
+  /** A "⏱ Wait" step: a flow item that only pauses (item.wait = seconds), for credits that arrive a little later. */
+  T.isWaitStep = (it) => !!it && Number(it.wait) > 0;
+  T.waitStep = (seconds) => {
+    const s = Math.max(1, Math.min(600, Math.round(Number(seconds) || 15)));
+    return { id: M.uid(), name: `⏱ Wait ${s} s`, wait: s, request: { method: 'GET', header: [], url: { raw: 'wait://' + s, host: ['wait:'], path: [String(s)] }, auth: { type: 'noauth' } }, response: [], event: [] };
+  };
+
+  T.isSocketStep = (it) => !!(it && it.socket && typeof it.socket === 'object');
+  T.socketStep = (cfg) => {
+    const c = Object.assign({ url: '', query: [], token: '', emit: { event: '', data: '' }, wait: { event: '', timeout: 20 } }, cfg || {});
+    return { id: M.uid(), name: c.name || `⚡ ${c.wait.event || 'socket'}`, socket: { url: c.url, query: c.query, token: c.token, emit: c.emit, wait: c.wait },
+      request: { method: 'GET', header: [], url: { raw: c.url }, body: { mode: 'raw', raw: c.emit && c.emit.data ? c.emit.data : '' }, auth: { type: 'noauth' } }, response: [], event: [] };
+  };
+
+  /** socket.io-client, loaded the first time a socket step runs. */
+  let ioLoading = null;
+  const loadIo = () => {
+    if (window.io) return Promise.resolve(window.io);
+    if (!ioLoading) ioLoading = new Promise((resolve, reject) => {
+      const sc = document.createElement('script');
+      sc.src = 'https://cdn.socket.io/4.8.1/socket.io.min.js';
+      sc.onload = () => resolve(window.io);
+      sc.onerror = () => { ioLoading = null; reject(new Error('Could not load socket.io-client (cdn.socket.io) — is the internet reachable?')); };
+      document.head.append(sc);
+    });
+    return ioLoading;
+  };
+
+  /**
+   * A socket step: connect (query + token resolved from variables), emit one event if asked, then wait for
+   * the named event (or any event) and hand its payload on as the "response" so checks and keeps work as usual.
+   */
+  async function executeSocket(it) {
+    const out = { logs: [], tests: [], errors: [] };
+    const scopes = T.scopes();
+    const missing = new Set();
+    const res = (t) => M.resolve(t, scopes, missing);
+    const cfg = it.socket;
+    const url = res(cfg.url || '');
+    const query = {};
+    (cfg.query || []).forEach(([k, v]) => { if (String(k || '').trim()) query[k.trim()] = res(v); });
+    const token = res(cfg.token || '');
+    const emitEvent = res((cfg.emit && cfg.emit.event) || '');
+    const emitRaw = res((cfg.emit && cfg.emit.data) || '');
+    const waitEvent = res((cfg.wait && cfg.wait.event) || '');
+    const timeout = Math.max(1, Math.min(300, Number(cfg.wait && cfg.wait.timeout) || 20));
+    if (missing.size) {
+      const result = { error: `These variables have no value: ${[...missing].map((k) => '{{' + k + '}}').join(', ')}`, missing: [...missing], out };
+      S.results.set(it.id, result); return result;
+    }
+    let result;
+    const started = performance.now();
+    try {
+      const io = await loadIo();
+      let emitData = emitRaw;
+      if (emitRaw.trim()) { try { emitData = JSON.parse(emitRaw); } catch (e) { /* send as text */ } }
+      const got = await new Promise((resolve, reject) => {
+        const sock = io(url, { transports: ['websocket', 'polling'], query, auth: token ? { token } : undefined, reconnection: false, timeout: timeout * 1000, forceNew: true });
+        const seen = [];
+        const done = (fn) => { clearTimeout(timer); try { sock.offAny(); sock.disconnect(); } catch (e) { /* closed */ } fn(); };
+        const timer = setTimeout(() => done(() => reject(new Error(`No "${waitEvent || 'event'}" within ${timeout} s` + (seen.length ? ` — got ${seen.slice(0, 5).map((x) => x.event).join(', ')} instead` : ' — nothing arrived')))), timeout * 1000);
+        sock.on('connect_error', (err) => done(() => reject(new Error('Socket connect failed: ' + (err && err.message ? err.message : err)))));
+        sock.on('connect', () => {
+          out.logs.push(`[socket] connected ${url} as ${JSON.stringify(query)} via ${sock.io.engine.transport.name}`);
+          if (emitEvent) { sock.emit(emitEvent, emitData); out.logs.push(`[socket] emitted ${emitEvent} ${emitRaw.slice(0, 200)}`); }
+        });
+        sock.onAny((event, ...args) => {
+          const payload = args.length <= 1 ? args[0] : args;
+          seen.push({ event, payload });
+          out.logs.push(`[socket] ← ${event} ${JSON.stringify(payload).slice(0, 300)}`);
+          if (!waitEvent || event === waitEvent) done(() => resolve({ event, payload, seen }));
+        });
+      });
+      const body = JSON.stringify({ event: got.event, payload: got.payload === undefined ? null : got.payload });
+      const r = { status: 200, reason: 'event', headers: [['x-socket-event', got.event]], timeMs: Math.round(performance.now() - started), size: body.length, body, via: 'socket' };
+      const coll = S.coll.data, parents = M.parentsOf(coll.item, it) || [];
+      const env = T.envStore(), collVars = T.collStore(), local = T.localStore();
+      for (const sc of M.scriptsFor(it, parents, coll, 'test')) {
+        const o = M.runScript(sc.code, { env, coll: collVars, local, response: r, name: it.name });
+        o.logs.forEach((l) => out.logs.push(`[post-response · ${sc.from}] ${l}`));
+        o.tests.forEach((x) => out.tests.push(x));
+        if (o.error) out.errors.push(`post-response script (${sc.from}): ${o.error}`);
+      }
+      out.tests.unshift({ name: `Got "${got.event}" after ${r.timeMs} ms`, ok: true });
+      result = { res: r, sent: { method: 'SOCKET', url, headers: [], body: emitRaw }, out };
+    } catch (e) {
+      result = { error: e.message, out };
+    }
+    S.results.set(it.id, result);
+    return result;
+  }
+
+  /** Runs a step; a step with `repeat` {every, max} is sent again until its checks pass or the tries run out. */
   T.execute = async function (it, opts) {
+    const rep = it.repeat && Number(it.repeat.max) > 1 ? { every: Math.max(1, Math.min(600, Number(it.repeat.every) || 5)), max: Math.max(2, Math.min(200, Math.round(Number(it.repeat.max)))) } : null;
+    if (!rep) return executeOnce(it, opts);
+    let result = null;
+    for (let n = 1; n <= rep.max; n++) {
+      result = await executeOnce(it, opts);
+      const j = T.judge(result);
+      if (j.verdict !== 'fail') {
+        if (result.out) result.out.tests.push({ name: n === 1 ? `Passed on the first try` : `Passed on try ${n} of ${rep.max} (every ${rep.every} s)`, ok: true });
+        result.tries = n;
+        S.results.set(it.id, result);
+        return result;
+      }
+      if (n < rep.max) {
+        S.results.set(it.id, Object.assign({}, result, { retrying: n }));
+        if (opts && opts.onRetry) opts.onRetry(n, rep, j);
+        await new Promise((res) => setTimeout(res, rep.every * 1000));
+      }
+    }
+    if (result && result.out) result.out.tests.push({ name: `Still not passing after ${rep.max} tries, every ${rep.every} s`, ok: false, error: 'gave up' });
+    if (result) { result.tries = rep.max; S.results.set(it.id, result); }
+    return result;
+  };
+
+  async function executeOnce(it, opts) {
+    if (T.isSocketStep(it)) return executeSocket(it);
+    if (T.isWaitStep(it)) {
+      const ms = Number(it.wait) * 1000;
+      const started = performance.now();
+      await new Promise((res) => setTimeout(res, ms));
+      const result = { res: { status: 200, reason: 'waited', headers: [], timeMs: Math.round(performance.now() - started), size: 0, body: '', via: 'wait' }, out: { logs: [], tests: [{ name: `Waited ${it.wait} s`, ok: true }], errors: [] } };
+      S.results.set(it.id, result);
+      return result;
+    }
     const coll = S.coll.data;
     const parents = M.parentsOf(coll.item, it) || [];
     const env = T.envStore(), collVars = T.collStore(), local = T.localStore();
@@ -139,6 +265,8 @@
   const LOOKUP = /history|statement|_log\b|log$|\blist\b|table_master|\/get|details?\b|\bstatus\b|agent_chats|\bwallet$|\/profile$|\/setting$|\/plan$|paymentmethod|currencyavailable|game_on_off|types$|info$|winners|\/welcome_bonus$|reffer_level/i;
 
   T.riskOf = function (it) {
+    if (T.isWaitStep(it)) return '';
+    if (T.isSocketStep(it)) return it.socket.emit && String(it.socket.emit.event || '').trim() ? 'sends a socket event' : '';
     const req = M.req(it);
     const url = M.urlRaw(req);
     const text = `${it.name} ${url}`;
@@ -191,15 +319,36 @@
     return el;
   };
 
+  /**
+   * A failure in plain words: the check's own title, its error, and — when both sides are numbers —
+   * the difference, so "expected 46700, got 46600" also says "(−100)".
+   */
+  T.plainReason = function (text) {
+    let s = String(text || '').replace(/^Auto run: /, '');
+    const m = s.match(/^HTTP \d+, test "([^"]*)" failed(?: — (.*))?$/s);
+    if (m) s = m[2] && !m[1].includes(m[2]) ? `${m[1]} — ${m[2]}` : m[1];
+    const nums = s.match(/expected\s+(-?[\d,]+(?:\.\d+)?)[^\d-]{1,40}?got\s+(-?[\d,]+(?:\.\d+)?)/i);
+    if (nums) {
+      const want = Number(nums[1].replace(/,/g, '')), got = Number(nums[2].replace(/,/g, ''));
+      if (Number.isFinite(want) && Number.isFinite(got) && want !== got) {
+        const d = got - want;
+        s += ` (${d > 0 ? '+' : '−'}${fmtNum(Math.abs(d))} off)`;
+      }
+    }
+    return s;
+  };
+
   /** The short line under a step: the check that decided it, or what the server said. */
   function stepDetail(r) {
     if (!r.on) return 'not selected';
     if (r.state === 'queued') return '';
-    if (r.state === 'running') return 'sending…';
+    if (r.state === 'running') return T.isWaitStep(r.it) ? 'waiting…' : 'sending…';
     if (r.state === 'waiting') return 'waiting for your input';
     const tests = (r.result && r.result.out && r.result.out.tests) || [];
     const bad = tests.find((t) => !t.ok);
-    const pick = bad || tests.find((t) => /→/.test(t.name)) || null;
+    if (bad) return T.plainReason(bad.name + (bad.error && !bad.name.includes(bad.error) ? ' — ' + bad.error : ''));
+    if (r.state === 'fail' && r.reason) return T.plainReason(r.reason);
+    const pick = tests.find((t) => /→/.test(t.name)) || null;
     if (pick) return pick.name.replace(/\s*\(for information\)\s*$/, '');
     return r.reason || '';
   }
@@ -288,7 +437,7 @@
           h('span.fc-pill', { class: pill.cls, text: pill.text, title: pill.text }),
           phase === 'setup' ? '' : h('span.fc-count', {}, h('span.mk-verified', { text: `✓ ${n('pass')}` }), h('span.mk-failing', { text: ` ✕ ${n('fail')}` }), n('skip') ? h('span.faint', { text: ` – ${n('skip')}` }) : '')),
         h('ol.fc-chain', {}, g.rows.map((r, i) => {
-          const method = (M.req(r.it).method || 'GET').toUpperCase();
+          const method = T.isWaitStep(r.it) ? 'WAIT' : T.isSocketStep(r.it) ? 'SOCKET' : (M.req(r.it).method || 'GET').toUpperCase();
           const detail = stepDetail(r);
           const ms = r.result && r.result.res && r.result.res.timeMs;
           return h('li.fc-node', {
@@ -393,7 +542,7 @@
         return;
       }
       const list = h('div.run-list', {}, rows.map((r) => {
-        const method = (M.req(r.it).method || 'GET').toUpperCase();
+        const method = T.isWaitStep(r.it) ? 'WAIT' : (M.req(r.it).method || 'GET').toUpperCase();
         const parents = (M.parentsOf(S.coll.data.item, r.it) || []).slice(folder ? (M.parentsOf(S.coll.data.item, folder) || []).length + 1 : 0);
         return h('div.run-row', {
           class: `st-${r.state}${r.on ? '' : ' off'}`,
@@ -428,7 +577,9 @@
       const mark = autoMark.checked, haltOnFail = stopOnFail.checked, pause = Math.max(0, Math.min(10000, Number(delay.value) || 0));
       phase = 'running'; S.sending = true; draw();
       try {
-        for (const r of chosen) {
+        const jumps = { count: 0 };
+        for (let i = 0; i < chosen.length;) {
+          const r = chosen[i];
           if (stop) break;
           const asks = T.stepAsks ? T.stepAsks(r.it) : [];
           if (asks.length) {
@@ -438,19 +589,22 @@
             if (answers === null) {
               if (stop) { r.state = 'queued'; r.reason = ''; break; }
               r.state = 'skip'; r.reason = 'skipped — no input given'; draw();
-              continue;
+              i++; continue;
             }
-            answers.forEach((v, i) => T.localStore().set(asks[i].var, v));
+            answers.forEach((v, i2) => T.localStore().set(asks[i2].var, v));
           }
           r.state = 'running'; draw();
-          const result = await T.execute(r.it, { skipEmpty: true });
+          const result = await T.execute(r.it, { skipEmpty: true, onRetry: (n, rep) => { r.reason = `try ${n} of ${rep.max} did not pass — again in ${rep.every} s`; draw(); } });
           r.result = result;
           const j = T.judge(result);
           r.state = j.verdict; r.reason = j.reason;
-          if (mark && j.verdict !== 'skip') await T.setMark(r.it, j.verdict === 'pass' ? 'verified' : 'failing', j.verdict === 'fail' ? 'Auto run: ' + j.reason : '', { quiet: true });
+          const go = T.flowAdvance ? T.flowAdvance(chosen, i, r, jumps) : { next: i + 1 };
+          if (mark && r.state !== 'skip') await T.setMark(r.it, r.state === 'pass' ? 'verified' : 'failing', r.state === 'fail' ? 'Auto run: ' + r.reason : '', { quiet: true });
           if (S.envDirty) await T.saveEnv(true);
-          if (haltOnFail && j.verdict === 'fail') { stop = true; failedStop = true; }
+          if (haltOnFail && r.state === 'fail') { stop = true; failedStop = true; }
           draw();
+          if (go.ended) break;
+          i = go.next;
           if (pause && !stop) await new Promise((res) => setTimeout(res, pause));
         }
       } finally {
@@ -458,6 +612,7 @@
         phase = 'done'; draw();
         T.renderTree(); T.renderMarkBar(); T.renderResponse();
         if (S.view === 'flows') T.renderEditor();
+        if (T.shareReport) footer.prepend(h('button', { text: '🔗 Share report', title: 'Save this run as a page anyone can open, and copy its link', onclick: () => T.shareReport(title, [{ name: title, rows: rows.filter((r) => r.on) }]) }));
       }
     };
     draw();

@@ -196,6 +196,17 @@ _SCHEMA = [
         marked_at     BIGINT NOT NULL,
         PRIMARY KEY (collection_id, item_id)
     ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # A saved flow run (tester.py /api/tester/reports): step names, verdicts and test messages, as one
+    # JSON document. Opened by its random id without a sign-in, so the backend team can read it.
+    """CREATE TABLE IF NOT EXISTS tester_reports (
+        id         VARCHAR(32) PRIMARY KEY,
+        team_id    VARCHAR(32) NULL,
+        title      VARCHAR(300) NOT NULL,
+        data       MEDIUMTEXT NOT NULL,
+        created_by VARCHAR(190) NOT NULL,
+        created_at BIGINT NOT NULL,
+        KEY idx_tester_reports_team (team_id, created_at)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
 ]
 
 

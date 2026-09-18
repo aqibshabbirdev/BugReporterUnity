@@ -297,6 +297,58 @@ def set_mark(coll_id, item_id):
     return jsonify(status=status, note=note, responseCode=code, markedBy=g.user["email"], markedAt=ts)
 
 
+# ── reports ─────────────────────────────────────────────────────────────────
+
+MAX_REPORT_BYTES = 2 * 1024 * 1024
+REPORT_PAGE = PAGE + "/report/"
+
+
+@bp.post("/api/tester/reports")
+@require_user
+def create_report():
+    """Save a flow run so its link can be handed to someone without an account. The page only ever
+    stores what the runner shows — step names, verdicts, test titles — never tokens or bodies."""
+    _mutating_guard()
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get("flows"), list):
+        return jsonify(error="a report needs a flows list"), 400
+    title = str(body.get("title") or "Flow run")[:300]
+    text = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+    if len(text.encode()) > MAX_REPORT_BYTES:
+        return jsonify(error="report too large"), 413
+    rid, ts = db.new_id(), db.now()
+    with db.connect() as conn:
+        conn.execute(
+            "INSERT INTO tester_reports (id, team_id, title, data, created_by, created_at) VALUES (?,?,?,?,?,?)",
+            (rid, g.user["team_id"], title, text, g.user["email"], ts),
+        )
+    return jsonify(id=rid, url=REPORT_PAGE + rid, createdAt=ts)
+
+
+@bp.get("/api/tester/reports/<rid>")
+def get_report(rid):
+    # No sign-in: the 32-hex id is the secret. The document holds nothing sensitive (see create_report).
+    if not (len(rid) == 32 and all(c in "0123456789abcdef" for c in rid)):
+        abort(404)
+    with db.connect() as conn:
+        row = conn.execute("SELECT title, data, created_by, created_at FROM tester_reports WHERE id = ?", (rid,)).fetchone()
+    if not row:
+        return jsonify(error="not found"), 404
+    data = json.loads(row["data"])
+    data["createdBy"] = row["created_by"]
+    data["createdAt"] = row["created_at"]
+    resp = jsonify(data)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@bp.get(REPORT_PAGE + "<rid>")
+def report_page(rid):
+    resp = send_from_directory(STATIC_DIR, "report.html")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 # ── sending ─────────────────────────────────────────────────────────────────
 
 @bp.post("/api/tester/send")

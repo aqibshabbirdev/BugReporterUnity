@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flow report · API Tester</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23161b22'/%3E%3Cpath d='M8 12h13m-4-4 4 4-4 4M24 20H11m4-4-4 4 4 4' fill='none' stroke='%234493f8' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <style>
+    :root { --bg: #0d1117; --bg2: #161b22; --border: #30363d; --text: #e6edf3; --muted: #8b949e; --faint: #6e7681; --green: #3fb950; --red: #f85149; --amber: #d29922; --accent: #4493f8; }
+    @media (prefers-color-scheme: light) { :root { --bg: #ffffff; --bg2: #f6f8fa; --border: #d0d7de; --text: #1f2328; --muted: #57606a; --faint: #8c959f; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    main { max-width: 960px; margin: 0 auto; padding: 24px 16px 60px; }
+    h1 { font-size: 22px; margin: 0 0 4px; }
+    .meta { color: var(--muted); margin: 0 0 18px; }
+    .sum { display: flex; gap: 14px; flex-wrap: wrap; margin: 0 0 20px; }
+    .sum b { font-size: 20px; display: block; }
+    .sum > div { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; min-width: 120px; }
+    .ok { color: var(--green); } .bad { color: var(--red); } .skip { color: var(--amber); } .faint { color: var(--faint); }
+    details.flow { border: 1px solid var(--border); border-radius: 8px; background: var(--bg2); margin: 0 0 12px; }
+    details.flow > summary { cursor: pointer; padding: 10px 14px; font-weight: 600; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+    details.flow > summary .pill { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; }
+    details.flow > summary .why { font-weight: 400; color: var(--muted); flex-basis: 100%; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--border); vertical-align: top; }
+    th { color: var(--muted); font-weight: 500; font-size: 12px; }
+    td.n { width: 30px; color: var(--faint); font-variant-numeric: tabular-nums; }
+    td.m { width: 60px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--muted); }
+    td.st { width: 24px; text-align: center; }
+    tr.fail td { background: rgba(248,81,73,.07); }
+    ul.tests { margin: 4px 0 0; padding-left: 16px; color: var(--muted); }
+    ul.tests li.bad { color: var(--red); }
+    .boot { color: var(--muted); }
+    @media (max-width: 600px) { td.m { display: none; } }
+  </style>
+</head>
+<body>
+  <main id="app"><p class="boot">Loading report…</p></main>
+  <script>
+    (async () => {
+      const app = document.getElementById('app');
+      const id = location.pathname.split('/').filter(Boolean).pop();
+      const el = (tag, attrs, ...kids) => {
+        const [name, ...classes] = tag.split('.');
+        const e = document.createElement(name);
+        if (classes.length) e.className = classes.join(' ');
+        for (const [k, v] of Object.entries(attrs || {})) { if (k === 'text') e.textContent = v; else e.setAttribute(k, v); }
+        kids.flat().forEach((k) => { if (k !== '' && k != null) e.append(k.nodeType ? k : document.createTextNode(String(k))); });
+        return e;
+      };
+      let rep;
+      try {
+        const r = await fetch('/api/tester/reports/' + id);
+        if (!r.ok) throw new Error(r.status === 404 ? 'This report does not exist or the link is incomplete.' : 'HTTP ' + r.status);
+        rep = await r.json();
+      } catch (e) {
+        app.replaceChildren(el('h1', { text: 'Report not found' }), el('p.meta', { text: e.message }));
+        return;
+      }
+      document.title = rep.title + ' · Flow report';
+      const flows = rep.flows || [];
+      const passed = flows.filter((f) => f.failedAt == null && f.total && f.passed === f.total).length;
+      const failed = flows.filter((f) => f.failedAt != null).length;
+      const when = new Date((rep.createdAt || rep.at) * 1000).toLocaleString();
+      app.replaceChildren(
+        el('h1', { text: rep.title }),
+        el('p.meta', { text: `${rep.collection || ''}${rep.environment ? ' · ' + rep.environment : ''} · ${when}${rep.createdBy ? ' · run by ' + rep.createdBy : ''}` }),
+        el('div.sum', {},
+          el('div', {}, el('b', { text: String(flows.length) }), 'flows'),
+          el('div', {}, el('b.ok', { text: String(passed) }), 'passed'),
+          el('div', {}, el('b.bad', { text: String(failed) }), 'failed'),
+          el('div', {}, el('b.skip', { text: String(flows.length - passed - failed) }), 'not finished')),
+        ...flows.map((f) => {
+          const ok = f.failedAt == null && f.total && f.passed === f.total;
+          const fs = f.failedAt != null ? f.steps[f.failedAt - 1] : null;
+          return el('details.flow', ok ? {} : { open: '' },
+            el('summary', {},
+              el('span.pill', { class: ok ? 'ok' : fs ? 'bad' : 'skip', text: ok ? 'Passed' : fs ? 'Failed' : 'Not finished' }),
+              el('span', { text: f.name }),
+              el('span.faint', { text: `${f.passed}/${f.total}` }),
+              fs ? el('span.why', { text: `Step ${f.failedAt} — ${fs.name}: ${fs.reason || ''}` }) : ''),
+            el('table', {},
+              el('thead', {}, el('tr', {}, el('th', { text: '#' }), el('th', { text: '' }), el('th', { text: 'Step' }), el('th', { text: 'Method' }), el('th', { text: 'What happened' }))),
+              el('tbody', {}, f.steps.map((s, i) => {
+                const mark = s.state === 'pass' ? '✓' : s.state === 'fail' ? '✕' : s.state === 'skip' ? '–' : '·';
+                const cls = s.state === 'pass' ? 'ok' : s.state === 'fail' ? 'bad' : 'faint';
+                const tests = (s.tests || []).filter((t) => t.name);
+                return el('tr', { class: s.state === 'fail' ? 'fail' : '' },
+                  el('td.n', { text: String(i + 1) }),
+                  el('td.st', {}, el('span', { class: cls, text: mark })),
+                  el('td', {}, s.name, s.url ? el('div.faint', { text: s.url }) : ''),
+                  el('td.m', { text: s.method + (s.http ? ' · ' + s.http : '') }),
+                  el('td', {},
+                    s.state === 'not run' ? el('span.faint', { text: 'not run' }) : '',
+                    s.state === 'fail' && s.reason && !tests.some((t) => !t.ok) ? el('span.bad', { text: s.reason }) : '',
+                    tests.length ? el('ul.tests', {}, tests.map((t) => el('li', { class: t.ok ? '' : 'bad', text: (t.ok ? '✓ ' : '✕ ') + t.name + (t.error && !t.name.includes(t.error) ? ' — ' + t.error : '') }))) : ''));
+              }))));
+        }));
+    })();
+  </script>
+</body>
+</html>
