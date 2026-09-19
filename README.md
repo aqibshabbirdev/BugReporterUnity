@@ -174,9 +174,12 @@ Python app** (EasyApache 4 `mod_passenger`, `/usr/bin/python3.12`).
   `PassengerApps/ensure_deps?type=pip&app_path=bugreporter` (reads the app root `requirements.txt`).
 - MySQL: MariaDB 10.11 on `localhost`, database `pandabugsreporti_db`, user `pandabugsreporti_user`
   (cPanel → Manage My Databases). The password exists only in `.env`. Schema is created on first boot.
-- **Deploying a change:** put the changed files under `…/bugreporter/` (File Manager, or UAPI
-  `Fileman/save_file_content`), then save `tmp/restart.txt`. Dashboard changes = `npm run build` →
-  upload `backend/static/`.
+- **Deploying a change:** push to `main`, then cPanel → *Git™ Version Control* → the
+  `BugReporterUnity` clone → *Manage* → *Pull or Deploy* → **Update from Remote**, then **Deploy HEAD
+  Commit**. `.cpanel.yml` copies `backend/{app,tester_static,static,main.py}`, `passenger_wsgi.py`,
+  `main.py`, `requirements.txt` into `…/bugreporter/` and touches `tmp/restart.txt`. (Manual fallback:
+  put the files there yourself and save `tmp/restart.txt`.) Dashboard changes = `npm run build` and
+  commit `backend/static/` first.
 
 ### Gotchas that cost time here
 1. **`/api` proxy loop, server-wide.** WHM → Apache Configuration → Include Editor → *Pre Main Include*

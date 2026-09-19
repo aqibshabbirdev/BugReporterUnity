@@ -1,0 +1,10 @@
+---
+# cPanel Git Version Control runs these after "Update from Remote" → "Deploy HEAD Commit".
+# The live app lives outside public_html (README §4); Passenger restarts when tmp/restart.txt is touched.
+deployment:
+  tasks:
+    - export DEPLOYPATH=/home/pandabugsreporti/bugreporter
+    - /bin/mkdir -p $DEPLOYPATH/backend $DEPLOYPATH/tmp
+    - /bin/cp -R backend/app backend/tester_static backend/static backend/main.py $DEPLOYPATH/backend/
+    - /bin/cp passenger_wsgi.py main.py requirements.txt $DEPLOYPATH/
+    - /bin/touch $DEPLOYPATH/tmp/restart.txt
