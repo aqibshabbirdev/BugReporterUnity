@@ -708,3 +708,33 @@ button.fb-chip.missing:hover, button.fb-chip.empty:hover { background: rgba(210,
 .lt-chip { font-size: 11.5px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); font-variant-numeric: tabular-nums; }
 .lt-chip.ok { color: var(--green); border-color: rgba(63,185,80,.4); }
 .lt-chip.bad { color: var(--red); border-color: rgba(248,81,73,.45); }
+
+/* security scan */
+.sec { display: grid; gap: 12px; }
+.sec-setup, .sec-live { display: grid; gap: 10px; }
+.sec-opts { display: grid; gap: 8px; }
+.sec-opt { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: start; font-size: 13px; }
+.sec-opt .hint { display: block; margin: 2px 0 0; }
+.sec-scoreline { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 13px; }
+.sec-score { font-weight: 600; font-variant-numeric: tabular-nums; padding: 1px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.sec-score.high { color: var(--red); border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.08); }
+.sec-score.medium { color: var(--orange); border-color: rgba(240,136,62,.45); background: rgba(240,136,62,.08); }
+.sec-score.low { color: var(--amber); border-color: rgba(210,153,34,.4); background: rgba(210,153,34,.08); }
+.sec-score.info { color: var(--accent); border-color: rgba(68,147,248,.4); }
+.sec-clean { margin: 0; color: var(--green); font-weight: 600; }
+.sec-findings { display: grid; gap: 8px; max-height: min(56vh, 560px); overflow: auto; }
+.sec-find { border: 1px solid var(--border-soft); border-left: 3px solid var(--border); border-radius: 8px; padding: 8px 10px; display: grid; gap: 4px; }
+.sec-find.s-high { border-left-color: var(--red); background: rgba(248,81,73,.05); }
+.sec-find.s-medium { border-left-color: var(--orange); }
+.sec-find.s-low { border-left-color: var(--amber); }
+.sec-find.s-info { border-left-color: var(--accent); }
+.sec-find-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sec-badge { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 1px 7px; border-radius: 5px; background: var(--bg3); color: var(--muted); }
+.sec-badge.high { background: rgba(248,81,73,.18); color: var(--red); }
+.sec-badge.medium { background: rgba(240,136,62,.18); color: var(--orange); }
+.sec-badge.low { background: rgba(210,153,34,.18); color: var(--amber); }
+.sec-badge.info { background: rgba(68,147,248,.16); color: var(--accent); }
+.sec-ep { margin-left: auto; font-size: 12px; }
+.sec-find-detail { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.sec-find-fix { font-size: 12.5px; color: var(--text); }
+.sec-find-fix b { color: var(--green); }

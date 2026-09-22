@@ -711,9 +711,12 @@
       entries.push({ label: 'New folder here', run: () => T.addItem(M.newFolder(), it) });
       entries.push({ label: '🚀 Run all tests…', run: () => T.runDialog(it) });
       if (T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) });
+      if (T.securityDialog) entries.push({ label: '🛡 Security scan…', run: () => T.securityDialog(it) });
       entries.push('-');
     }
-    if (!M.isFolder(it) && T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) }, '-');
+    if (!M.isFolder(it) && T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) });
+    if (!M.isFolder(it) && T.securityDialog) entries.push({ label: '🛡 Security scan…', run: () => T.securityDialog(it) });
+    if (!M.isFolder(it) && (T.loadDialog || T.securityDialog)) entries.push('-');
     entries.push({ label: 'Rename', run: () => { const n = prompt('Name', it.name); if (n && n.trim()) { it.name = n.trim(); T.markDirty(); T.renderTree(); T.renderEditor(); } } });
     entries.push({
       label: 'Duplicate', run: () => {
@@ -839,7 +842,8 @@
         h('button', { text: '+ Request here', onclick: () => T.addItem(M.newRequest(), it) }),
         h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) }),
         h('button.primary', { text: '🚀 Run all tests', title: 'Send every request in this folder in order and mark the results', onclick: () => T.runDialog(it) }),
-        T.loadDialog ? h('button', { text: '⚡ Load test', title: 'Send this folder over and over from many users at once', onclick: () => T.loadDialog(it) }) : ''),
+        T.loadDialog ? h('button', { text: '⚡ Load test', title: 'Send this folder over and over from many users at once', onclick: () => T.loadDialog(it) }) : '',
+        T.securityDialog ? h('button', { text: '🛡 Security scan', title: 'Check these APIs for missing auth, leaked secrets and other common weaknesses', onclick: () => T.securityDialog(it) }) : ''),
       R.tabs, R.tabBody
     );
     renderTabs(); renderTab();
