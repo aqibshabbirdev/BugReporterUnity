@@ -220,7 +220,7 @@
       const list = h('div.sec-findings', {}, flat.length ? flat.map((f) => h('div.sec-find', { class: 's-' + f.sev },
         h('div.sec-find-head', {}, h('span.sec-badge', { class: f.sev, text: SEV[f.sev].label }), h('b', { text: f.title }), h('span.faint.sec-ep', { text: f.endpoint })),
         h('div.sec-find-detail', { text: f.detail }),
-        h('div.sec-find-fix', {}, h('b', { text: 'Fix: ' }), f.fix))) : (phase === 'done' ? '' : h('p.hint', { text: 'Running…' })));
+        h('div.sec-find-fix', {}, h('b', { text: 'Fix: ' }), f.fix))) : (phase === 'running' ? h('p.hint', { text: 'Checking…' }) : ''));
 
       const skipped = results.filter((r) => r.skipped || r.error);
       const note = phase === 'done' && skipped.length

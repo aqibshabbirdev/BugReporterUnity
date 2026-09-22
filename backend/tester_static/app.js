@@ -712,6 +712,7 @@
       entries.push({ label: '🚀 Run all tests…', run: () => T.runDialog(it) });
       if (T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) });
       if (T.securityDialog) entries.push({ label: '🛡 Security scan…', run: () => T.securityDialog(it) });
+      if (T.recordFolderContracts) entries.push({ label: '📐 Record response shapes', run: () => T.recordFolderContracts(it) });
       entries.push('-');
     }
     if (!M.isFolder(it) && T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) });
