@@ -710,8 +710,10 @@
       entries.push({ label: 'New request here', run: () => T.addItem(M.newRequest(), it) });
       entries.push({ label: 'New folder here', run: () => T.addItem(M.newFolder(), it) });
       entries.push({ label: '🚀 Run all tests…', run: () => T.runDialog(it) });
+      if (T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) });
       entries.push('-');
     }
+    if (!M.isFolder(it) && T.loadDialog) entries.push({ label: '⚡ Load test…', run: () => T.loadDialog(it) }, '-');
     entries.push({ label: 'Rename', run: () => { const n = prompt('Name', it.name); if (n && n.trim()) { it.name = n.trim(); T.markDirty(); T.renderTree(); T.renderEditor(); } } });
     entries.push({
       label: 'Duplicate', run: () => {
@@ -836,7 +838,8 @@
       h('div.inline', {},
         h('button', { text: '+ Request here', onclick: () => T.addItem(M.newRequest(), it) }),
         h('button', { text: '+ Folder here', onclick: () => T.addItem(M.newFolder(), it) }),
-        h('button.primary', { text: '🚀 Run all tests', title: 'Send every request in this folder in order and mark the results', onclick: () => T.runDialog(it) })),
+        h('button.primary', { text: '🚀 Run all tests', title: 'Send every request in this folder in order and mark the results', onclick: () => T.runDialog(it) }),
+        T.loadDialog ? h('button', { text: '⚡ Load test', title: 'Send this folder over and over from many users at once', onclick: () => T.loadDialog(it) }) : ''),
       R.tabs, R.tabBody
     );
     renderTabs(); renderTab();

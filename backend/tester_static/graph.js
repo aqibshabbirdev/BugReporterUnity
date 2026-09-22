@@ -62,10 +62,11 @@
   const ruleLabel = (rule) => (rule.field === '@ok' ? 'Response looks OK' : (FIELD_LABEL[rule.field] || rule.field) + ' ' + ((T.ruleOps[rule.op] || { label: rule.op }).label));
 
   /** Nodes with their pins, check nodes, and who feeds whom. `rows` are the runner rows ({it, state, result, reason}). */
-  T.flowGraphModel = function (rows) {
+  T.flowGraphModel = function (rows, shownVars) {
     const producer = {};                       // variable → index of the last step that keeps it
     const nodes = [];
     const checks = [];
+    const varSet = new Set(shownVars || []);
     rows.forEach((r, idx) => {
       const it = r.it;
       const req = M.req(it);
@@ -83,7 +84,7 @@
       const inputs = uniq([...M.varsIn(reqText), ...found(GETS_RE, pre)]).filter((k) => !preSets.has(k) && !asked.has(k));
       const reads = found(GETS_RE, test).filter((k) => !kept.some((o) => o.k === k) && !preSets.has(k) && !inputs.includes(k));
       const pin = (k) => ({ k, from: producer[k] !== undefined ? producer[k] : null });
-      const isNoise = (k) => NOISE_RE.test(k) && producer[k] === undefined;
+      const isNoise = (k) => NOISE_RE.test(k) && producer[k] === undefined && !varSet.has(k);
       const shared = inputs.filter(isNoise);
       const allTests = (r.result && r.result.out && r.result.out.tests) || [];
       const used = new Set();
@@ -116,11 +117,19 @@
     const wires = [];
     nodes.forEach((n, i) => {
       if (i) wires.push({ kind: 'exec', from: i - 1, to: i });
-      n.inputs.forEach((p, j) => { if (p.from !== null) wires.push({ kind: 'data', from: p.from, to: i, k: p.k, pin: ['in', j] }); });
-      n.reads.forEach((p, j) => { if (p.from !== null) wires.push({ kind: 'data', from: p.from, to: i, k: p.k, pin: ['read', j] }); });
+      n.inputs.forEach((p, j) => {
+        if (p.from !== null) wires.push({ kind: 'data', from: p.from, to: i, k: p.k, pin: ['in', j] });
+        else if (varSet.has(p.k)) wires.push({ kind: 'var', k: p.k, to: i, pin: ['in', j] });
+      });
+      n.reads.forEach((p, j) => {
+        if (p.from !== null) wires.push({ kind: 'data', from: p.from, to: i, k: p.k, pin: ['read', j] });
+        else if (varSet.has(p.k)) wires.push({ kind: 'var', k: p.k, to: i, pin: ['read', j] });
+      });
     });
     nodes.forEach((n) => { if (n.branch && n.branch.rule.then === 'jump') n.branch.target = nodes.findIndex((x) => x.it.id === n.branch.rule.to); });
-    return { nodes, checks, wires };
+    // Variable nodes: values from Variables shown on the canvas, wired into every pin that reads them.
+    const vars = [...varSet].map((k) => ({ type: 'var', id: `var:${k}`, k, value: valueOf(k), uses: wires.filter((w) => w.kind === 'var' && w.k === k).length }));
+    return { nodes, checks, wires, vars };
   };
 
   /** The value a variable has right now, from the run's own values first. */
@@ -139,7 +148,7 @@
 
   /* ── layout ────────────────────────────────────────────────────────────── */
 
-  const W = 236, HEAD = 40, ROW = 17, PAD = 8, GAP_X = 96, GAP_Y = 56, CW = 236, CGAP = 14;
+  const W = 236, HEAD = 40, ROW = 17, PAD = 8, GAP_X = 96, GAP_Y = 56, CW = 236, CGAP = 14, VW = 190, VH = 56;
   let COLS = 3;
 
   const checkHeight = (c) => (c.rule.field === '@ok' ? 52 : 74) + (c.needsRef ? 22 : 0);
@@ -155,6 +164,12 @@
     return n;
   }
 
+  function layoutVars(vars, saved) {
+    vars.forEach((v, i) => {
+      v.x = 20 - VW - 70; v.y = 20 + i * (VH + 18); v.h = VH;
+      const q = saved && saved[v.id]; if (q) { v.x = q[0]; v.y = q[1]; }
+    });
+  }
   function layout(nodes, saved) {
     nodes.forEach(measure);
     const rows = [];
@@ -188,6 +203,7 @@
   const checkInPos = (c) => ({ x: c.x, y: c.y + 13 });
   const checkRefPos = (c) => ({ x: c.x, y: c.y + c.h - 33 });
   const branchRefPos = (b) => ({ x: b.x, y: b.y + b.h - 55 });
+  const varOutPos = (v) => ({ x: v.x + VW, y: v.y + 16 });
   const branchOutPos = (b) => ({ x: b.x + CW, y: b.y + b.h - 31 });
 
   function wirePath(a, b) {
@@ -219,6 +235,8 @@
       try { const old = JSON.parse(localStorage.getItem('fg:pos:' + flow.id) || 'null'); if (old) flow.graph.pos = old; } catch (e) { /* none */ }
     }
     const saved = flow.graph.pos;
+    flow.graph.vars = flow.graph.vars || [];       // variable names drawn as nodes on this flow's canvas
+    const shownVars = flow.graph.vars;
     const view = viewMem.get(flow.id) || { x: 0, y: 0, k: 1, fitted: false };
     viewMem.set(flow.id, view);
 
@@ -244,9 +262,9 @@
     const fit = () => {
       if (!model || !model.nodes.length) return;
       const box = wrap.getBoundingClientRect();
-      const all = model.nodes.concat(model.checks, model.nodes.filter((n) => n.branch).map((n) => n.branch));
+      const all = model.nodes.concat(model.checks, model.nodes.filter((n) => n.branch).map((n) => n.branch), model.vars);
       const minX = Math.min(...all.map((n) => n.x)) - 20, minY = Math.min(...all.map((n) => n.y)) - 20;
-      const maxX = Math.max(...all.map((n) => n.x + W)) + 20, maxY = Math.max(...all.map((n) => n.y + n.h)) + 20;
+      const maxX = Math.max(...all.map((n) => n.x + (n.type === 'var' ? VW : W))) + 20, maxY = Math.max(...all.map((n) => n.y + n.h)) + 20;
       const k = Math.min(1.25, (box.width || 800) / (maxX - minX), (box.height || 520) / (maxY - minY));
       view.k = Math.max(0.3, k);
       view.x = ((box.width || 800) - (maxX - minX) * view.k) / 2 - minX * view.k;
@@ -276,16 +294,46 @@
     };
     const anchorAt = (ev) => ({ getBoundingClientRect: () => ({ left: ev.clientX, right: ev.clientX, top: ev.clientY, bottom: ev.clientY }) });
     const dropLink = (from, spec, ev) => {
+      const [kind, a, b] = (spec || '').split(':');
+      if (from.var) {                                   // dragged from a variable node
+        const k = from.var;
+        if (kind === 'in') {
+          const dst = model.nodes[Number(a)];
+          if (b === k) return;
+          T.stepUseVar(dst.it, b, k);
+          return apply(`Step ${dst.idx + 1} now uses {{${k}}} instead of {{${b}}}`);
+        }
+        if (kind === 'ref') { const dst = model.nodes[Number(a)]; const rule = dst.meta.rules[Number(b)]; if (rule) { rule.ref = `{{${k}}}`; T.setStepMeta(dst.it, dst.meta); apply(`Check compares with {{${k}}}`); } return; }
+        if (kind === 'bref') { const dst = model.nodes[Number(a)]; if (dst.it.branch) { dst.it.branch.ref = `{{${k}}}`; apply(`Branch compares with {{${k}}}`); } return; }
+        if (kind === 'step') {
+          const dst = model.nodes[Number(a)];
+          if (dst.wait) return;
+          const own = uniq(dst.inputs.map((p) => p.k).concat(dst.shared, dst.reads.map((p) => p.k))).filter((x) => x !== k);
+          T.menu(anchorAt(ev), [
+            ...(dst.sock ? [] : [{ label: `Send {{${k}}} as this step's bearer token`, run: () => { T.stepBearer(dst.it, k); apply(`Step ${dst.idx + 1} sends {{${k}}} as its token`); } }]),
+            ...own.map((x) => ({ label: `Use {{${k}}} instead of {{${x}}}`, run: () => { T.stepUseVar(dst.it, x, k); apply(`Step ${dst.idx + 1} now uses {{${k}}} instead of {{${x}}}`); } })),
+            { label: 'Cancel', run: () => {} }
+          ]);
+        }
+        return;
+      }
       const src = model.nodes[from.node];
-      if (!spec) {
+      if (kind === 'var') {                             // a kept value dropped on a variable node: the step sets it
+        if (!from.path) return T.toast(`{{${from.k}}} is set by a script in that step — keep a response field instead`, 'error');
+        const i = src.meta.save.findIndex(([, kk]) => kk === a);
+        if (i >= 0) src.meta.save[i] = [from.path, a]; else src.meta.save.push([from.path, a]);
+        T.setStepMeta(src.it, src.meta);
+        return apply(`Step ${src.idx + 1} now sets {{${a}}} from ${from.path}`);
+      }
+      if (!spec || kind === 'step') {
         if (!wrap.contains(document.elementFromPoint(ev.clientX, ev.clientY))) return;
         T.menu(anchorAt(ev), [
           { label: `Check {{${from.k}}} at step ${src.idx + 1}…`, run: () => addCheck(src, from.path || from.k) },
+          { label: `Show {{${from.k}}} as a variable node`, run: () => showVar(from.k) },
           { label: 'Cancel', run: () => {} }
         ]);
         return;
       }
-      const [kind, a, b] = spec.split(':');
       if (kind === 'in') {
         const dst = model.nodes[Number(a)];
         if (dst.idx <= src.idx) return T.toast('A value can only flow forward — to a later step', 'error');
@@ -339,6 +387,21 @@
       n.meta.ask.push({ var: v.trim(), label });
       T.setStepMeta(n.it, n.meta);
       apply('The flow will ask for this value at that step');
+    };
+    const showVar = (k) => { if (!shownVars.includes(k)) shownVars.push(k); apply(); };
+    const hideVar = (k) => { const i = shownVars.indexOf(k); if (i >= 0) shownVars.splice(i, 1); delete saved['var:' + k]; apply(); };
+    const addVariable = () => {
+      const name = prompt('Variable name (used as {{name}} in any step):', '');
+      if (!name || !name.trim()) return;
+      const k = name.trim().replace(/^\{\{|\}\}$/g, '').replace(/[^A-Za-z0-9_.-]/g, '_');
+      const cur = valueOf(k);
+      const v = prompt(`Value of {{${k}}}:`, cur === undefined ? '' : String(cur));
+      if (v === null) return;
+      const store = T.varStoreFor(k);
+      store.set(k, v);
+      T.saveVarStore(store);
+      showVar(k);
+      T.toast(cur === undefined ? `{{${k}}} created — drag its pin onto a step` : `{{${k}}} on the canvas`);
     };
     const addBranch = (n) => {
       n.it.branch = { field: '@status', op: 'is', value: '402', then: 'end' };
@@ -569,13 +632,67 @@
       return g;
     };
 
+    /** A variable node: name, editable value, an output pin to drag onto steps, a target for kept values. */
+    const varNode = (v, nodes) => {
+      const has = v.value !== undefined && String(v.value) !== '';
+      const g = svg('g', { class: 'fg-var-g' + (has ? ' has' : ''), transform: `translate(${v.x} ${v.y})`, 'data-check': v.id });
+      const box = svg('rect', { class: 'fg-var-box', width: VW, height: v.h, rx: 8, 'data-drop': `var:${v.k}` });
+      g.append(box);
+      g.append(svg('rect', { class: 'fg-var-head', width: VW, height: 22, rx: 8 }));
+      g.append(svg('rect', { class: 'fg-var-head', y: 14, width: VW, height: 8 }));
+      const t = svg('text', { class: 'fg-var-name', x: 8, y: 15 }, cut('{{' + v.k + '}}', 24));
+      t.append(svg('title', {}, `{{${v.k}}} — from Variables${v.uses ? `, used by ${v.uses} pin${v.uses === 1 ? '' : 's'} here` : ''}\nDrag the pin onto a step's input, or drop a kept value here to set it`));
+      g.append(t);
+      const pin = svg('circle', { class: 'fg-pin out var' + (has ? ' has' : ''), cx: VW, cy: 16, r: 4.5 });
+      const grab = svg('circle', { class: 'fg-grab', cx: VW, cy: 16, r: 10 });
+      grab.append(svg('title', {}, `Drag {{${v.k}}} onto a step — an input pin, or the step itself for "use as token"`));
+      grab.addEventListener('mousedown', (ev) => startLink(ev, { var: v.k }, { x: v.x + VW, y: v.y + 16 }));
+      g.append(pin, grab);
+      const fo = svg('foreignObject', { x: 6, y: 26, width: VW - 12, height: 26 });
+      const input = h('input.mono.fg-var-val', {
+        value: v.value === undefined ? '' : String(v.value), type: SECRET_RE.test(v.k) ? 'password' : 'text', placeholder: 'value', 'aria-label': `Value of ${v.k}`,
+        onkeydown: (ev) => { if (ev.key === 'Enter') input.blur(); },
+        onchange: async () => { const store = T.varStoreFor(v.k); store.set(v.k, input.value); await T.saveVarStore(store); apply(); }
+      });
+      input.addEventListener('mousedown', (ev) => ev.stopPropagation());
+      fo.append(input);
+      g.append(fo);
+      const x = svg('text', { class: 'fg-var-x', x: VW - 10, y: 15, 'text-anchor': 'middle' }, '×');
+      x.append(svg('title', {}, 'Take it off the canvas (the variable itself stays in Variables)'));
+      x.addEventListener('mousedown', (ev) => ev.stopPropagation());
+      x.addEventListener('click', (ev) => { ev.stopPropagation(); hideVar(v.k); });
+      g.append(x);
+      g.addEventListener('mousedown', (ev) => {
+        if (ev.button !== 0) return;
+        ev.stopPropagation();
+        const press = { sx: ev.clientX, sy: ev.clientY, ox: v.x, oy: v.y, moved: false };
+        const move = (e) => {
+          const dx = (e.clientX - press.sx) / view.k, dy = (e.clientY - press.sy) / view.k;
+          if (!press.moved && Math.hypot(dx, dy) < 3) return;
+          press.moved = true; v.x = press.ox + dx; v.y = press.oy + dy;
+          saved[v.id] = [Math.round(v.x), Math.round(v.y)];
+          g.setAttribute('transform', `translate(${v.x} ${v.y})`); redrawWires();
+        };
+        const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up); if (press.moved) persist(); };
+        window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
+      });
+      return g;
+    };
+
     const wireLayerRef = { el: null };
     const drawWires = () => {
       const { nodes, checks, wires } = model;
       const layer = svg('g', { class: 'fg-wires' });
       wires.forEach((w) => {
         const a = nodes[w.from], b = nodes[w.to];
-        if (w.kind === 'exec') {
+        if (w.kind === 'var') {
+          const v = model.vars.find((x) => x.k === w.k);
+          if (!v) return;
+          const to = w.pin[0] === 'in' ? pinPos(b, 'in', w.pin[1]) : readPos(b, w.pin[1]);
+          const p = svg('path', { d: wirePath(varOutPos(v), to), class: 'fg-wire var' + (v.value !== undefined && String(v.value) !== '' ? ' live' : '') });
+          p.append(svg('title', {}, `{{${w.k}}} → step ${b.idx + 1}`));
+          layer.append(p);
+        } else if (w.kind === 'exec') {
           layer.append(svg('path', { d: execPath(a, b), class: 'fg-wire exec st-' + (a.r.on === false ? 'off' : a.r.state), 'marker-end': 'url(#fg-arrow)' }));
         } else {
           const j = a.outputs.findIndex((o) => o.k === w.k);
@@ -620,8 +737,9 @@
       closePop();
       const width = wrap.getBoundingClientRect().width || 900;
       COLS = Math.max(2, Math.min(4, Math.floor((width - 40 + GAP_X) / (W + GAP_X))));
-      model = T.flowGraphModel(rows);
+      model = T.flowGraphModel(rows, shownVars);
       layout(model.nodes, saved);
+      layoutVars(model.vars, saved);
       const { nodes, checks } = model;
       const nodeLayer = svg('g', { class: 'fg-nodes' });
 
@@ -629,7 +747,7 @@
         const r = n.r;
         const state = r.on === false ? 'off' : r.state || 'queued';
         const g = svg('g', { class: `fg-node st-${state}`, transform: `translate(${n.x} ${n.y})`, tabindex: 0, role: 'button' });
-        g.append(svg('rect', { class: 'fg-box', width: W, height: n.h, rx: 8 }));
+        g.append(svg('rect', { class: 'fg-box', width: W, height: n.h, rx: 8, 'data-drop': `step:${n.idx}` }));
         g.append(svg('rect', { class: 'fg-head m-' + n.method, width: W, height: HEAD - 8, rx: 8 }));
         g.append(svg('rect', { class: 'fg-head-fix m-' + n.method, y: HEAD - 16, width: W, height: 8 }));
         const icon = { pass: '✓', fail: '✕', skip: '–', running: '…', waiting: '✎' }[state] || '';
@@ -666,8 +784,15 @@
           const has = v !== undefined && String(v) !== '';
           g.append(svg('circle', { class: 'fg-pin in' + (p.from !== null ? ' wired' : ' var') + (has ? ' has' : ''), cx: 0, cy: y, r: 4 }));
           g.append(svg('circle', { class: 'fg-drop', cx: 0, cy: y, r: 10, 'data-drop': `in:${n.idx}:${p.k}` }));
-          const t = svg('text', { class: 'fg-pin-t', x: 9, y: y + 4 }, cut(p.k + (has ? ' · ' + show(p.k, v) : p.from === null ? ' · not set' : ''), row < rightRows ? 17 : 32));
-          t.append(svg('title', {}, `{{${p.k}}}` + (p.from !== null ? ` — kept by step ${p.from + 1}` : ' — from Variables') + (has ? '\n= ' + (SECRET_RE.test(p.k) ? show(p.k, v) : v) : p.from === null ? '\nnot set' : '') + '\nDrag a kept value onto this pin to feed it from a step'));
+          const t = svg('text', { class: 'fg-pin-t' + (p.from === null ? ' varpin' : ''), x: 9, y: y + 4 }, cut(p.k + (has ? ' · ' + show(p.k, v) : p.from === null ? ' · not set' : ''), row < rightRows ? 17 : 32));
+          t.append(svg('title', {}, `{{${p.k}}}` + (p.from !== null ? ` — kept by step ${p.from + 1}` : ' — from Variables (click for options)') + (has ? '\n= ' + (SECRET_RE.test(p.k) ? show(p.k, v) : v) : p.from === null ? '\nnot set' : '') + '\nDrag a kept value or a variable node onto this pin to feed it'));
+          if (p.from === null) {
+            t.addEventListener('mousedown', (ev) => ev.stopPropagation());
+            t.addEventListener('click', (ev) => { ev.stopPropagation(); T.menu(anchorAt(ev), [
+              ...(shownVars.includes(p.k) ? [] : [{ label: `Show {{${p.k}}} as a variable node`, run: () => showVar(p.k) }]),
+              { label: `Edit the value of {{${p.k}}}…`, run: async () => { const nv = prompt(`Value of {{${p.k}}}:`, v === undefined ? '' : String(v)); if (nv === null) return; const store = T.varStoreFor(p.k); store.set(p.k, nv); await T.saveVarStore(store); apply(); } }
+            ]); });
+          }
           g.append(t);
         });
         n.asks.forEach((a) => {
@@ -804,6 +929,7 @@
       });
       checks.forEach((c) => nodeLayer.append(checkNode(c, nodes)));
       nodes.filter((n) => n.branch).forEach((n) => nodeLayer.append(branchNode(n.branch, nodes)));
+      model.vars.forEach((v) => nodeLayer.append(varNode(v, nodes)));
       // field names each step answered with, for the branch and check boxes
       document.querySelectorAll('datalist[id^="fg-fields-"]').forEach((d) => d.remove());
       nodes.forEach((n) => document.body.append(h('datalist', { id: `fg-fields-${n.idx}` }, [h('option', { value: '@status' }), h('option', { value: '@ok' })].concat(n.fields.map((f) => h('option', { value: f.path }))))));
@@ -873,6 +999,7 @@
       h('button', { text: '+ Step', title: 'Add an API from the collection as the next step', onclick: addStepDialog }),
       h('button', { text: '+ Wait', title: 'Pause between steps', onclick: addWait }),
       h('button', { text: '+ Socket', title: 'Listen for (or send) a socket.io event', onclick: () => socketForm(null) }),
+      h('button', { text: '+ Variable', title: 'A value from Variables as a node — drag its pin onto any step', onclick: addVariable }),
       h('span.fg-tools-sep'),
       h('button.ghost', { text: '−', 'aria-label': 'Zoom out', onclick: () => zoomBy(1 / 1.2) }),
       h('button.ghost', { text: '+', 'aria-label': 'Zoom in', onclick: () => zoomBy(1.2) }),
@@ -884,7 +1011,7 @@
       h('span.fg-key.var', { text: 'from Variables' }),
       h('span.fg-key.check', { text: 'check' }),
       h('span.fg-key.branch', { text: 'branch' }),
-      h('span.hint', { text: 'Drag a green pin onto a later input, or onto a check\'s "since" · "+ pick a value" keeps or checks a response field · ⌘/Ctrl + scroll zooms' })));
+      h('span.hint', { text: 'Drag a green or purple pin onto an input (or a step) · "+ pick a value" keeps or checks a response field · ⌘/Ctrl + scroll zooms' })));
     // variable names for the amount box
     if (!document.getElementById('fg-vars')) document.body.append(h('datalist', { id: 'fg-vars' }));
     const names = new Set();

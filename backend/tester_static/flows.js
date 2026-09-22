@@ -227,6 +227,23 @@
     return it;
   };
   T.flowSteps = (flow) => stepsOf(flow);
+  /** Make a step use {{next}} wherever it used {{prev}} — URL, body, headers, auth. */
+  T.stepUseVar = (it, prev, next) => {
+    const req = M.req(it);
+    const swapped = JSON.parse(JSON.stringify(req).split('{{' + prev + '}}').join('{{' + next + '}}'));
+    Object.keys(req).forEach((k) => delete req[k]);
+    Object.assign(req, swapped);
+    if (T.isSocketStep(it)) it.socket = JSON.parse(JSON.stringify(it.socket).split('{{' + prev + '}}').join('{{' + next + '}}'));
+  };
+  /** Make a step send {{name}} as its bearer token. */
+  T.stepBearer = (it, name) => {
+    const req = M.req(it);
+    req.header = (req.header || []).filter((x) => !/^authorization$/i.test(x.key));
+    req.auth = { type: 'bearer', bearer: [{ key: 'token', value: `{{${name}}}`, type: 'string' }] };
+  };
+  /** Where a variable's value lives for editing: the environment if it has it, else the collection. */
+  T.varStoreFor = (k) => (S.env && T.envStore().has(k) ? T.envStore() : T.collStore());
+  T.saveVarStore = async (store) => { if (S.env && store === T.envStore()) await T.saveEnv(true); else { T.markDirty(); await T.saveColl(); } };
   /** Every request outside the Flows folder, with its folder trail, for pickers. */
   T.libraryRequests = () => {
     const out = [];
@@ -449,12 +466,13 @@
     const more = h('button.ghost', {
       text: '⋯', title: 'More', 'aria-label': 'More actions',
       onclick: (ev) => T.menu(ev.currentTarget, [
+        T.loadDialog ? { label: '⚡ Load test this flow', run: () => T.loadDialog(flow) } : null,
         { label: 'Duplicate flow', run: () => { const root = flowsRoot(); const copy = M.freshIds(M.clone(flow)); copy.name = flow.name + ' copy'; root.item.splice(root.item.indexOf(flow) + 1, 0, copy); S.flowSel = copy.id; T.markDirty(); T.renderTree(); T.renderEditor(); T.saveColl(); } },
         { label: 'Duplicate for another game…', run: () => T.duplicateForGame(flow) },
         { label: '🔗 Share last result', run: () => T.shareReport(flow.name, [{ name: flow.name, rows }]) },
         '-',
         { label: 'Delete flow', danger: true, run: () => { if (!confirm(`Delete the flow "${flow.name}"?`)) return; const root = flowsRoot(); root.item.splice(root.item.indexOf(flow), 1); S.flowSel = null; T.markDirty(); T.renderTree(); T.renderEditor(); T.saveColl(); } }
-      ])
+      ].filter(Boolean))
     });
     const failedRow = rows.find((r) => r.state === 'fail');
     const failedAt = failedRow ? h('p.flow-failed', {},
