@@ -164,6 +164,7 @@ Python app** (EasyApache 4 `mod_passenger`, `/usr/bin/python3.12`).
 | `…/bugreporter/logs/app.log` | the app's own log: boot lines + one line per request (path/status/timing). Apache's error_log is root-only, so this is what you have |
 | `/home/pandabugsreporti/bugreporter_data/uploads/` | `BR_UPLOAD_DIR` — screenshots / logs / clips |
 | `public_html/` | nothing app-related; Passenger answers `/` for the whole domain |
+| `public_html/pandabugsreporting.com/hybridclr/` | Unity HybridCLR hot-update files, uploaded by the `hybridclr@pandabugsreporting.com` FTP account. Static files there are unreachable (Passenger owns the domain), so the app serves them at `/hybridclr/<file>` (`backend/app/hotupdate.py`; folder overridable with `BR_HOTUPDATE_DIR`). Dotfiles are hidden, responses are `no-cache` with ETag |
 | `/home/pandabugsreporti/old_deploy_aug29/` | the abandoned Aug-29 Docker attempt, moved out of `public_html` (it had been world-readable, `.env` included). Safe to delete |
 
 - Registered with cPanel UAPI `PassengerApps/register_application` (name `bugreporter`, path `bugreporter`,

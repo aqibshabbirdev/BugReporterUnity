@@ -25,6 +25,8 @@ _log.write("\n=== boot pid=%d %s python=%s\n" % (os.getpid(), time.strftime("%Y-
 # (/data/uploads, a container hostname) can't win. Application Manager env vars still override.
 os.environ.setdefault("BR_UPLOAD_DIR", os.path.join(os.path.dirname(HERE), "bugreporter_data", "uploads"))
 os.environ.setdefault("DB_HOST", "localhost")
+# HybridCLR hot-update modules: the folder the hybridclr@ FTP account writes to (served at /hybridclr/).
+os.environ.setdefault("BR_HOTUPDATE_DIR", os.path.join(os.path.dirname(HERE), "public_html", "pandabugsreporting.com", "hybridclr"))
 
 
 def _load_env_file(path):
