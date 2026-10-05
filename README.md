@@ -165,6 +165,7 @@ Python app** (EasyApache 4 `mod_passenger`, `/usr/bin/python3.12`).
 | `/home/pandabugsreporti/bugreporter_data/uploads/` | `BR_UPLOAD_DIR` — screenshots / logs / clips |
 | `public_html/` | nothing app-related; Passenger answers `/` for the whole domain |
 | `public_html/pandabugsreporting.com/hybridclr/` | Unity HybridCLR hot-update files, uploaded by the `hybridclr@pandabugsreporting.com` FTP account. Static files there are unreachable (Passenger owns the domain), so the app serves them at `/hybridclr/<file>` (`backend/app/hotupdate.py`; folder overridable with `BR_HOTUPDATE_DIR`). Dotfiles are hidden, responses are `no-cache` with ETag |
+| `public_html/pandabugsreporting.com/hybridclr/apk/` | Test APKs for testers and the client, uploaded with the same `hybridclr@` FTP account into `apk/`. Page: **https://pandabugsreporting.com/download** (newest first, by upload time); `/download/latest.apk` is a fixed link to the newest; an optional `<name>.txt` next to an APK shows as its notes (`backend/app/downloads.py`, folder overridable with `BR_APK_DIR`) |
 | `/home/pandabugsreporti/old_deploy_aug29/` | the abandoned Aug-29 Docker attempt, moved out of `public_html` (it had been world-readable, `.env` included). Safe to delete |
 
 - Registered with cPanel UAPI `PassengerApps/register_application` (name `bugreporter`, path `bugreporter`,
