@@ -137,6 +137,17 @@ _SCHEMA = [
         report_count  INT NOT NULL DEFAULT 0,
         UNIQUE KEY uq_build (project_id, version)
     )""",
+    # One row per multiplayer match the game reports (stats panel). transaction_id is the challenge id, so the
+    # two players of a match count once.
+    """CREATE TABLE IF NOT EXISTS match_sessions (
+        project_id     VARCHAR(32) NOT NULL,
+        transaction_id VARCHAR(80) NOT NULL,
+        game_id        INT NOT NULL DEFAULT 0,
+        build          VARCHAR(50),
+        created_at     BIGINT NOT NULL,
+        PRIMARY KEY (project_id, transaction_id),
+        KEY idx_match_sessions_time (project_id, created_at)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS issues (
         id                VARCHAR(32) PRIMARY KEY,
         project_id        VARCHAR(32) NOT NULL,
