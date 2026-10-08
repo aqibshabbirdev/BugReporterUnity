@@ -15,6 +15,12 @@ namespace BugReporter
         /// <summary>HTTPS ingest endpoint, e.g. https://us-central1-&lt;project&gt;.cloudfunctions.net/report</summary>
         public string Endpoint;
 
+        /// <summary>
+        /// Where <see cref="BugReporter.ReportMatch"/> posts. Empty = derived from <see cref="Endpoint"/>
+        /// (".../api/report" → ".../api/stats/match").
+        /// </summary>
+        public string StatsEndpoint;
+
         /// <summary>Shown on every issue so you know which build the tester was on. Defaults to Application.version.</summary>
         public string BuildVersion;
 

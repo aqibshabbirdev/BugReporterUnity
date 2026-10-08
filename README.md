@@ -101,6 +101,17 @@ Reports that share a session are linked: the issue detail page shows a **"Same m
 devices"** panel with the other device's report(s) (jump straight to their logs/screenshot), and the grid
 stamps a **🔗 linked** badge on those cards. Derivation is automatic from `issues.session`; no session → no link.
 
+### Match count — the daily stats panel
+`BugReporter.ReportMatch(matchId, gameId)` counts a played multiplayer match on **/stats** (matches per day, per
+game). Call it on every device when the player joins the match, with the same id everywhere (the match counts
+once):
+```csharp
+BugReporter.ReportMatch(match.transactionId, lobbyGameId);
+```
+It works even with `Enabled = false` (needs `ApiKey` + `Endpoint` from `Init`), posts to `…/api/stats/match`
+(derived from `Endpoint`, or set `StatsEndpoint`), sends once per id per app run and is skipped in the editor.
+Since SDK 0.2.0.
+
 ### Clip recording — the last N seconds as a flipbook
 A report can carry a short clip of what led to the bug. It's **off by default** (`RecordClip`) because it
 captures the screen continuously — a small but real perf/battery cost, so keep it to tester builds:

@@ -127,6 +127,65 @@ namespace BugReporter
             lock (_sessionLock) { _session = sessionId?.Trim() ?? string.Empty; }
         }
 
+        private static readonly HashSet<string> _matchesSent = new HashSet<string>();
+
+        /// <summary>
+        /// Count a played multiplayer match on the dashboard's daily stats panel (/stats). Call it on every device
+        /// when the player joins the match (e.g. on connecting to the match server) with the SAME id everywhere —
+        /// the match counts once. <paramref name="gameId"/> is your lobby game id (shown per game on the panel).
+        /// Works even when the reporter itself is disabled (<see cref="BugReporterConfig.Enabled"/> = false), as long
+        /// as Init got a key and an endpoint. Fire and forget: once per id per app run, never retried, never throws.
+        /// Skipped in the editor so test matches do not inflate the count.
+        /// </summary>
+        public static void ReportMatch(string matchId, int gameId = 0)
+        {
+#if UNITY_EDITOR
+            return;
+#else
+            var cfg = _config;
+            if (cfg == null || string.IsNullOrWhiteSpace(matchId)) return;
+            string key = cfg.ApiKey?.Trim();
+            string url = StatsUrl(cfg);
+            if (string.IsNullOrEmpty(key) || !key.StartsWith("br_") || string.IsNullOrEmpty(url)) return;
+            matchId = matchId.Trim();
+            lock (_matchesSent) { if (!_matchesSent.Add(matchId)) return; }
+
+            string build = string.IsNullOrEmpty(cfg.BuildVersion) ? Application.version : cfg.BuildVersion;
+            string json = "{\"transaction_id\":\"" + Escape(matchId) + "\",\"game_id\":" + gameId +
+                          ",\"build\":\"" + Escape(build) + "\"}";
+            try
+            {
+                var req = new UnityEngine.Networking.UnityWebRequest(url, "POST")
+                {
+                    uploadHandler = new UnityEngine.Networking.UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(json)),
+                    downloadHandler = new UnityEngine.Networking.DownloadHandlerBuffer(),
+                    timeout = 15,
+                };
+                req.SetRequestHeader("Content-Type", "application/json");
+                req.SetRequestHeader("X-Api-Key", key);
+                req.SendWebRequest().completed += _ => req.Dispose();
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[BugReporter] ReportMatch failed: " + e.Message);
+            }
+#endif
+        }
+
+        internal static string StatsUrl(BugReporterConfig cfg)
+        {
+            if (!string.IsNullOrWhiteSpace(cfg.StatsEndpoint)) return cfg.StatsEndpoint.Trim();
+            string ep = cfg.Endpoint?.Trim();
+            if (string.IsNullOrEmpty(ep)) return null;
+            ep = ep.TrimEnd('/');
+            const string tail = "/api/report";
+            return ep.EndsWith(tail, StringComparison.OrdinalIgnoreCase)
+                ? ep.Substring(0, ep.Length - tail.Length) + "/api/stats/match"
+                : null;   // unknown endpoint shape: set StatsEndpoint explicitly
+        }
+
+        private static string Escape(string s) => (s ?? "").Replace("\\", "").Replace("\"", "");
+
         /// <summary>
         /// File a report. Captures a screenshot and the current log buffer, then uploads (with retry, and a
         /// disk queue if offline). Returns immediately — the work runs on a coroutine.

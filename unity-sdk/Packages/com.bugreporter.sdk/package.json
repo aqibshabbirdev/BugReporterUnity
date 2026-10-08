@@ -1,6 +1,6 @@
 {
   "name": "com.bugreporter.sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "displayName": "Bug Reporter",
   "description": "In-game bug reporting. Testers press a button; you get a ticket with the screenshot, the logs and the build.",
   "unity": "2020.3",
