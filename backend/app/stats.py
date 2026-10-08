@@ -16,7 +16,9 @@
   GET  /stats             the panel page (sign in on the dashboard first).
 """
 import calendar
+import functools
 import json
+import secrets
 import time
 
 from flask import Blueprint, Response, g, jsonify, request
@@ -25,6 +27,29 @@ from . import db
 from .api import require_user
 
 bp = Blueprint("stats", __name__)
+
+AI_TOKEN_PREFIX = "brai_"
+AI_TOKEN_TTL = 7 * 86400
+
+
+def require_stats_reader(fn):
+    """Dashboard login (cookie) or a read-only AI token (Authorization: Bearer brai_…) for the stats GET endpoints."""
+    cookie_wrapped = require_user(fn)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer " + AI_TOKEN_PREFIX):
+            token = auth[len("Bearer "):].strip()
+            with db.connect() as conn:
+                row = conn.execute("SELECT user_id, team_id FROM ai_tokens WHERE token_hash = ? AND expires_at > ?",
+                                   (db.hash_api_key(token), db.now())).fetchone()
+            if row is None:
+                return jsonify(error="AI token unknown or expired — copy a fresh prompt from /stats"), 401
+            g.user = {"id": row["user_id"], "team_id": row["team_id"], "role": "ai-reader"}
+            return fn(*args, **kwargs)
+        return cookie_wrapped(*args, **kwargs)
+    return wrapper
 
 DAY_OFFSET = 5 * 3600          # days are counted in Pakistan time (UTC+5)
 RATE_LIMIT, RATE_WINDOW = 600, 60.0   # per key — every player shares the project key
@@ -111,7 +136,7 @@ def _team_project_ids(conn):
 
 
 @bp.get("/api/stats/matches")
-@require_user
+@require_stats_reader
 def matches_of_day():
     date = request.args.get("date", "")
     try:
@@ -142,7 +167,7 @@ def matches_of_day():
 
 
 @bp.get("/api/stats/match-log/<tx>")
-@require_user
+@require_stats_reader
 def match_log(tx):
     with db.connect() as conn:
         ids = _team_project_ids(conn)
@@ -196,18 +221,22 @@ def _since(days):
 
 
 @bp.get("/api/stats/flags")
-@require_user
+@require_stats_reader
 def flagged_players():
     try:
         days = max(1, min(366, int(request.args.get("days", 30))))
     except ValueError:
         days = 30
+    return jsonify(players=_flagged_players(days), disconnect_win_threshold=DISCONNECT_WIN_THRESHOLD)
+
+
+def _flagged_players(days):
     since = _since(days)
     players = {}
     with db.connect() as conn:
         ids = _team_project_ids(conn)
         if not ids:
-            return jsonify(players=[])
+            return []
         marks = ",".join("?" * len(ids))
         for r in conn.execute(f"SELECT player_id, player_name, code, game, transaction_id, created_at FROM match_flags "
                               f"WHERE project_id IN ({marks}) AND created_at >= ? ORDER BY created_at",
@@ -252,11 +281,11 @@ def flagged_players():
             "last": time.strftime("%Y-%m-%d %H:%M", time.gmtime(p["last_at"] + DAY_OFFSET)) if p["last_at"] else ""}
            for p in players.values()]
     out.sort(key=lambda p: (-p["count"], p["name"] or ""))
-    return jsonify(players=out, disconnect_win_threshold=DISCONNECT_WIN_THRESHOLD)
+    return out
 
 
 @bp.get("/api/stats/flags/<player_id>")
-@require_user
+@require_stats_reader
 def player_flags(player_id):
     with db.connect() as conn:
         ids = _team_project_ids(conn)
@@ -269,6 +298,122 @@ def player_flags(player_id):
     return jsonify(flags=[{"game": r["game"], "code": r["code"], "detail": r["detail"], "transaction_id": r["transaction_id"],
                            "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(r["created_at"]) + DAY_OFFSET))}
                           for r in rows])
+
+
+@bp.post("/api/stats/ai-token")
+@require_user
+def ai_token():
+    """A read-only token (7 days) an AI assistant can use to read the stats endpoints — handed out inside the
+    "Analyze with AI" prompt. It can read stats only: no dashboard, no writes."""
+    token = AI_TOKEN_PREFIX + secrets.token_urlsafe(24)
+    now = db.now()
+    with db.connect() as conn:
+        conn.execute("DELETE FROM ai_tokens WHERE expires_at < ?", (now,))
+        conn.execute("INSERT INTO ai_tokens (token_hash, user_id, team_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                     (db.hash_api_key(token), g.user["id"], g.user["team_id"], now, now + AI_TOKEN_TTL))
+    return jsonify(token=token, expires_in_days=AI_TOKEN_TTL // 86400)
+
+
+FLAG_MEANINGS = {
+    "false_win_claim": "claimed a win/finish the server's board does not back",
+    "unbacked_win_claim": "claimed a win while the opponent was connected and the server had not ended the game",
+    "out_of_turn": "acted on the opponent's turn",
+    "illegal_move": "sent a move the rules do not allow",
+    "roll_twice": "asked to roll again before moving",
+    "move_without_roll": "asked to move without a roll",
+    "replayed_action": "re-sent an already used action",
+    "tampered_request": "sent a value the real app never sends (modified client)",
+    "finish_too_far": "claimed the finish far from the line",
+    "finish_missing_checkpoints": "claimed the finish without passing the checkpoints",
+    "finish_before_start": "claimed the finish before the race started",
+    "many_disconnect_wins": "won several matches because the opponent disconnected/left (pattern)",
+}
+
+
+@bp.get("/api/stats/ai-export")
+@require_stats_reader
+def ai_export():
+    """Everything an AI assistant needs for one review, compact: totals, per-day per-game counts, flagged players,
+    recent flags and the logs of flagged matches (trimmed)."""
+    try:
+        days = max(1, min(90, int(request.args.get("days", 7))))
+    except ValueError:
+        days = 7
+    since = _since(days)
+    today = (int(time.time()) + DAY_OFFSET) // 86400
+    with db.connect() as conn:
+        ids = _team_project_ids(conn)
+        if not ids:
+            return jsonify(error="no projects"), 404
+        marks = ",".join("?" * len(ids))
+        per_day = {}
+        for r in conn.execute(f"SELECT FLOOR((created_at + ?) / 86400) AS d, game_id, COUNT(*) AS n FROM match_sessions "
+                              f"WHERE project_id IN ({marks}) AND created_at >= ? GROUP BY d, game_id",
+                              (DAY_OFFSET, *ids, since)).fetchall():
+            day = per_day.setdefault(int(r["d"]), {})
+            day[_game_name(r["game_id"])] = day.get(_game_name(r["game_id"]), 0) + int(r["n"])
+        flags = [dict(r) for r in conn.execute(
+            f"SELECT player_id, player_name, game, code, detail, transaction_id, created_at FROM match_flags "
+            f"WHERE project_id IN ({marks}) AND created_at >= ? ORDER BY created_at DESC LIMIT 300", (*ids, since)).fetchall()]
+        flagged_tx = []
+        for f in flags:
+            if f["transaction_id"] and f["transaction_id"] not in flagged_tx:
+                flagged_tx.append(f["transaction_id"])
+        flagged_tx = flagged_tx[:20]
+        logs = []
+        if flagged_tx:
+            tm = ",".join("?" * len(flagged_tx))
+            for r in conn.execute(f"SELECT transaction_id, body FROM match_logs WHERE project_id IN ({marks}) "
+                                  f"AND transaction_id IN ({tm})", (*ids, *flagged_tx)).fetchall():
+                try:
+                    b = json.loads(r["body"])
+                except ValueError:
+                    continue
+                ev = b.get("events") or []
+                logs.append({"transaction_id": r["transaction_id"], "game": b.get("game"), "players": b.get("players"),
+                             "winner_id": b.get("winner_id"), "winner_name": b.get("winner_name"), "reason": b.get("reason"),
+                             "scores": b.get("scores"), "flags": b.get("flags"),
+                             "events": [e.get("msg") for e in (ev[:80] + ev[-40:] if len(ev) > 120 else ev)],
+                             "events_total": len(ev)})
+        results = {}
+        for r in conn.execute(f"SELECT body FROM match_logs WHERE project_id IN ({marks}) AND created_at >= ?",
+                              (*ids, since)).fetchall():
+            try:
+                b = json.loads(r["body"])
+            except ValueError:
+                continue
+            reason = str(b.get("reason") or "").lower()
+            kind = "draw" if b.get("winner_id") == "draw" else \
+                "opponent left/disconnected" if any(w in reason for w in DISCONNECT_WIN_WORDS) else \
+                "time over" if "time" in reason else "played to the end"
+            g_ = b.get("game") or "?"
+            results.setdefault(g_, {}).setdefault(kind, 0)
+            results[g_][kind] += 1
+    daily = []
+    for d in range(today, today - days, -1):
+        games = per_day.get(d, {})
+        daily.append({"date": time.strftime("%Y-%m-%d", time.gmtime(d * 86400)), "total": sum(games.values()), "games": games})
+    by_game = {}
+    for d in daily:
+        for k, v in d["games"].items():
+            by_game[k] = by_game.get(k, 0) + v
+    for f in flags:
+        f["time"] = time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(f.pop("created_at")) + DAY_OFFSET))
+    return jsonify({
+        "about": "Games Panda multiplayer stats from the match servers. Days in Pakistan time. A flag is a server-side "
+                 "hint that a player did something the rules do not allow — a reason to review, not proof (a bad network "
+                 "can cause the odd one). Results by type come only from matches whose server sent a log.",
+        "period_days": days,
+        "totals": {"matches": sum(d["total"] for d in daily), "by_game": by_game},
+        "daily": daily,
+        "results_by_type": results,
+        "flag_meanings": FLAG_MEANINGS,
+        "flagged_players": _flagged_players(days),
+        "recent_flags": flags,
+        "flagged_match_logs": logs,
+        "more": {"match_log": "/api/stats/match-log/<transaction_id>", "player_flags": "/api/stats/flags/<player_id>",
+                 "matches_of_day": "/api/stats/matches?date=YYYY-MM-DD"},
+    })
 
 
 @bp.post("/api/stats/match")
@@ -293,7 +438,7 @@ def report_match():
 
 
 @bp.get("/api/stats/daily")
-@require_user
+@require_stats_reader
 def daily():
     try:
         days = max(1, min(366, int(request.args.get("days", 30))))
@@ -386,6 +531,13 @@ button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px so
 .mrow .sp { min-width:0; word-break:break-word; }
 .uid { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--text); user-select:all; }
 .nid { font:11px ui-monospace,SFMono-Regular,Menlo,monospace; opacity:.9; margin-top:2px; word-break:break-all; user-select:all; }
+.hright { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.aibtn { font:inherit; font-size:14px; border:0; border-radius:8px; padding:7px 12px; background:#6b4bd8; color:#fff; cursor:pointer; }
+.aibox .aibody { padding:12px 16px; display:flex; flex-direction:column; gap:10px; }
+.airow { display:flex; gap:10px; flex-wrap:wrap; align-items:end; font-size:13px; color:var(--muted); }
+.airow label { display:flex; flex-direction:column; gap:4px; }
+.airow input { font:inherit; padding:6px 8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
+#ai-prompt { width:100%; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; border:1px solid var(--line); border-radius:8px; padding:8px; background:var(--bg); color:var(--text); }
 .viewer { margin-top:8px; }
 .vbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -417,8 +569,15 @@ th:nth-child(1) { width:118px; } th:nth-child(2) { width:96px; }
 .ev.score { background:#e09a1a; color:#241800; } .ev.turn { background:#55597d; } .ev.res { background:#f5b301; color:#2a2100; }
 h2 { font-size:16px; margin:28px 0 10px; }
 </style></head><body><main>
-<header><h1>Multiplayer matches per day</h1>
-<select id="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></header>
+<header><h1>Multiplayer matches per day</h1><div class="hright"><button id="ai-btn" class="aibtn">✦ Analyze with AI</button>
+<select id="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></div></header>
+<div id="ai-box" class="panel aibox" hidden><div class="panel-h">✦ Analyze with AI (Claude Code / Codex)</div><div class="aibody">
+<p class="games">Copies a ready prompt with a <b>read-only</b> token (stats only, 7 days). Paste it into Claude Code or Codex — it reads the data and writes the review on your own subscription. No AI API is used.</p>
+<div class="airow"><label>Period <select id="ai-days"><option value="1">Today</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></label>
+<label>Language <select id="ai-lang"><option>Roman Urdu</option><option>English</option></select></label>
+<label>User ID (optional) <input id="ai-player" placeholder="focus on one player"></label>
+<button id="ai-copy" class="aibtn">Copy prompt</button></div>
+<div id="ai-status" class="games"></div><textarea id="ai-prompt" rows="10" hidden></textarea></div></div>
 <div id="out"><div class="msg">Loading…</div></div>
 <p class="games">Counted once per challenge when a player connects to its match server. Days in Pakistan time. Tap a day to see its matches and their server logs.</p>
 </main>
@@ -627,5 +786,44 @@ async function toggleFlags(fp) {
     : '<span class="games">Only the pattern flag (worked out from match results) — open the days to see those matches.</span>';
   fp.append(d);
 }
+// ── Analyze with AI: copies a ready prompt (with a read-only 7-day token) for Claude Code / Codex ──
+const NL = String.fromCharCode(10);
+const aiBtn = document.getElementById('ai-btn'), aiBox = document.getElementById('ai-box');
+aiBtn.onclick = () => { aiBox.hidden = !aiBox.hidden; };
+document.getElementById('ai-copy').onclick = async () => {
+  const status = document.getElementById('ai-status'), out = document.getElementById('ai-prompt');
+  status.textContent = 'Making a read-only token…';
+  const r = await fetch('/api/stats/ai-token', {method: 'POST', credentials: 'same-origin'});
+  if (!r.ok) { status.textContent = r.status === 401 ? 'Sign in to the dashboard first.' : 'Could not make a token (' + r.status + ').'; return; }
+  const t = await r.json();
+  const days = document.getElementById('ai-days').value, lang = document.getElementById('ai-lang').value;
+  const player = document.getElementById('ai-player').value.trim();
+  const base = location.origin;
+  const auth = '-H "Authorization: Bearer ' + t.token + '"';
+  const lines = [
+    'You are reviewing Games Panda multiplayer match data for the admin team. The data is read-only.',
+    '',
+    'Fetch it:',
+    'curl -s ' + auth + ' "' + base + '/api/stats/ai-export?days=' + days + '"',
+  ];
+  if (player) lines.push('curl -s ' + auth + ' "' + base + '/api/stats/flags/' + encodeURIComponent(player) + '"');
+  lines.push(
+    'For a closer look at any match: curl -s ' + auth + ' "' + base + '/api/stats/match-log/<transaction_id>"',
+    '',
+    'Then write a short report in ' + lang + ':',
+    player ? '1. Everything about user ID ' + player + ': matches, flags, patterns, and whether this looks like cheating, bad luck or a bad network.'
+           : '1. Overview: matches per day and per game, trends, anything unusual.',
+    '2. Players the admin should review first — always with their user ID — ranked, with the evidence and why.',
+    '3. Patterns worth attention (many disconnect wins, repeated flags, the same opponents again and again, odd results per game).',
+    '4. Games that look broken or unfair (many draws, time-overs or disconnects).',
+    '5. Concrete next steps for the admin.',
+    '',
+    'Rules: flags are hints, not proof — say how sure you are. Use only this data; never invent numbers or IDs. ' +
+    'Keep it short and easy to act on. The token is read-only and expires in ' + t.expires_in_days + ' days.');
+  out.value = lines.join(NL);
+  out.hidden = false;
+  try { await navigator.clipboard.writeText(out.value); status.textContent = 'Copied — paste it into Claude Code or Codex.'; }
+  catch (e) { out.select(); status.textContent = 'Select the text below and copy it (the browser blocked the clipboard).'; }
+};
 sel.onchange = load; load();
 </script></body></html>"""

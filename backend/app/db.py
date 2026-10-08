@@ -175,6 +175,14 @@ _SCHEMA = [
         KEY idx_match_flags_player (project_id, player_id),
         KEY idx_match_flags_time (project_id, created_at)
     ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # Read-only tokens for AI assistants (Claude Code, Codex …) to read the stats panel's data. Hash only.
+    """CREATE TABLE IF NOT EXISTS ai_tokens (
+        token_hash VARCHAR(64) PRIMARY KEY,
+        user_id    VARCHAR(32) NOT NULL,
+        team_id    VARCHAR(32) NOT NULL,
+        created_at BIGINT NOT NULL,
+        expires_at BIGINT NOT NULL
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS issues (
         id                VARCHAR(32) PRIMARY KEY,
         project_id        VARCHAR(32) NOT NULL,
