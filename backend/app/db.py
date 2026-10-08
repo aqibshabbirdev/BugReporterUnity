@@ -148,6 +148,18 @@ _SCHEMA = [
         PRIMARY KEY (project_id, transaction_id),
         KEY idx_match_sessions_time (project_id, created_at)
     ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # The match server's event log of one match (e.g. "[Snooker Flow]" lines), sent with the result.
+    """CREATE TABLE IF NOT EXISTS match_logs (
+        project_id     VARCHAR(32) NOT NULL,
+        transaction_id VARCHAR(80) NOT NULL,
+        game_id        INT NOT NULL DEFAULT 0,
+        winner         VARCHAR(120),
+        event_count    INT NOT NULL DEFAULT 0,
+        body           MEDIUMTEXT NOT NULL,
+        created_at     BIGINT NOT NULL,
+        PRIMARY KEY (project_id, transaction_id),
+        KEY idx_match_logs_time (project_id, created_at)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS issues (
         id                VARCHAR(32) PRIMARY KEY,
         project_id        VARCHAR(32) NOT NULL,

@@ -2,12 +2,19 @@
 
   POST /api/stats/match   X-Api-Key (the project's key, like /api/report); body {transaction_id, game_id, build}.
                           Both players of a match report it; the challenge id makes it count once.
+  POST /api/stats/match-log  X-Api-Key; the match server's event log of one match, sent with the result:
+                          {transaction_id, game_id, winner_name, reason, scores, events: [{t, time, msg}]}.
+                          Stored as sent (re-sending replaces it) and counted as a played match too.
   GET  /api/stats/daily   dashboard login; ?days=30 → per day (Pakistan time) totals and per-game counts.
+  GET  /api/stats/matches dashboard login; ?date=YYYY-MM-DD → that day's matches that have a log.
+  GET  /api/stats/match-log/<transaction_id>  dashboard login; the stored JSON.
   GET  /stats             the panel page (sign in on the dashboard first).
 """
+import calendar
+import json
 import time
 
-from flask import Blueprint, g, jsonify, request
+from flask import Blueprint, Response, g, jsonify, request
 
 from . import db
 from .api import require_user
@@ -36,18 +43,115 @@ def _rate_limited(key_hash: str) -> bool:
     return limited
 
 
-@bp.post("/api/stats/match")
-def report_match():
+MAX_LOG_BYTES = 512 * 1024
+
+
+def _project_from_key():
+    """(project row, None) or (None, error response) for the X-Api-Key of this request."""
     api_key = request.headers.get("X-Api-Key", "")
     if not api_key.startswith("br_"):
-        return jsonify(error="missing or malformed X-Api-Key"), 401
+        return None, (jsonify(error="missing or malformed X-Api-Key"), 401)
     key_hash = db.hash_api_key(api_key)
     with db.connect() as conn:
         project = conn.execute("SELECT id FROM projects WHERE api_key_hash = ?", (key_hash,)).fetchone()
     if project is None:
-        return jsonify(error="unknown api key"), 401
+        return None, (jsonify(error="unknown api key"), 401)
     if _rate_limited(key_hash):
-        return jsonify(error="rate limited"), 429
+        return None, (jsonify(error="rate limited"), 429)
+    return project, None
+
+
+def _game_name(game_id) -> str:
+    try:
+        gid = int(game_id or 0)
+    except (TypeError, ValueError):
+        gid = 0
+    return GAME_NAMES.get(gid, f"Game {gid}")
+
+
+@bp.post("/api/stats/match-log")
+def report_match_log():
+    project, err = _project_from_key()
+    if err:
+        return err
+    if request.content_length and request.content_length > MAX_LOG_BYTES:
+        return jsonify(error="log too large"), 413
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        return jsonify(error="json body required"), 400
+    tx = str(body.get("transaction_id") or "").strip()[:80]
+    if not tx:
+        return jsonify(error="transaction_id required"), 400
+    try:
+        game_id = int(body.get("game_id") or 0)
+    except (TypeError, ValueError):
+        game_id = 0
+    events = body.get("events") if isinstance(body.get("events"), list) else []
+    winner = str(body.get("winner_name") or body.get("winner_id") or "")[:120] or None
+    raw = json.dumps(body, ensure_ascii=False)
+    if len(raw.encode("utf-8")) > MAX_LOG_BYTES:
+        return jsonify(error="log too large"), 413
+    now = db.now()
+    with db.connect() as conn:
+        conn.execute("DELETE FROM match_logs WHERE project_id = ? AND transaction_id = ?", (project["id"], tx))
+        conn.execute("INSERT INTO match_logs (project_id, transaction_id, game_id, winner, event_count, body, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?)", (project["id"], tx, game_id, winner, len(events), raw, now))
+        conn.execute("INSERT IGNORE INTO match_sessions (project_id, transaction_id, game_id, build, created_at) "
+                     "VALUES (?, ?, ?, ?, ?)", (project["id"], tx, game_id, None, now))
+    return jsonify(ok=True)
+
+
+def _team_project_ids(conn):
+    return [r["id"] for r in conn.execute("SELECT id FROM projects WHERE team_id = ?", (g.user["team_id"],)).fetchall()]
+
+
+@bp.get("/api/stats/matches")
+@require_user
+def matches_of_day():
+    date = request.args.get("date", "")
+    try:
+        day = calendar.timegm(time.strptime(date, "%Y-%m-%d")) // 86400   # the date's day number
+    except (ValueError, OverflowError):
+        return jsonify(error="date must be YYYY-MM-DD"), 400
+    start = day * 86400 - DAY_OFFSET
+    with db.connect() as conn:
+        ids = _team_project_ids(conn)
+        if not ids:
+            return jsonify(matches=[])
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT transaction_id, game_id, winner, event_count, created_at FROM match_logs "
+            f"WHERE project_id IN ({marks}) AND created_at >= ? AND created_at < ? ORDER BY created_at DESC",
+            (*ids, start, start + 86400)).fetchall()
+    return jsonify(matches=[{"transaction_id": r["transaction_id"], "game": _game_name(r["game_id"]),
+                             "winner": r["winner"], "events": int(r["event_count"]),
+                             "time": time.strftime("%H:%M", time.gmtime(int(r["created_at"]) + DAY_OFFSET))}
+                            for r in rows])
+
+
+@bp.get("/api/stats/match-log/<tx>")
+@require_user
+def match_log(tx):
+    with db.connect() as conn:
+        ids = _team_project_ids(conn)
+        if not ids:
+            return jsonify(error="not found"), 404
+        marks = ",".join("?" * len(ids))
+        row = conn.execute(f"SELECT body FROM match_logs WHERE project_id IN ({marks}) AND transaction_id = ?",
+                           (*ids, tx[:80])).fetchone()
+    if row is None:
+        return jsonify(error="not found"), 404
+    resp = Response(row["body"], mimetype="application/json")
+    if request.args.get("download"):
+        resp.headers["Content-Disposition"] = f'attachment; filename="match-{tx[:40]}.json"'
+    return resp
+
+
+@bp.post("/api/stats/match")
+def report_match():
+    project, err = _project_from_key()
+    if err:
+        return err
 
     body = request.get_json(silent=True) or {}
     tx = str(body.get("transaction_id") or "").strip()[:80]
@@ -136,12 +240,22 @@ td.n { font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap; }
 .games { color:var(--muted); font-size:13px; }
 .msg { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
 a { color:var(--accent); }
+tr.day { cursor:pointer; }
+tr.day:hover td { background:var(--bg); }
+tr.detail td { background:var(--bg); padding:10px 12px 14px; }
+.mlist { display:flex; flex-direction:column; gap:6px; }
+.mrow { display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:13px; }
+.mrow b { font-weight:600; }
+.mrow .sp { flex:1; }
+button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px solid var(--line); color:var(--accent); border-radius:6px; padding:3px 8px; cursor:pointer; }
+.log { margin-top:8px; max-height:420px; overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word; }
+.log .t { color:var(--muted); }
 h2 { font-size:16px; margin:28px 0 10px; }
 </style></head><body><main>
 <header><h1>Multiplayer matches per day</h1>
 <select id="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></header>
 <div id="out"><div class="msg">Loading…</div></div>
-<p class="games">Counted once per challenge when a player connects to its match server. Days in Pakistan time.</p>
+<p class="games">Counted once per challenge when a player connects to its match server. Days in Pakistan time. Tap a day to see its matches and their server logs.</p>
 </main>
 <script>
 const out = document.getElementById('out'), sel = document.getElementById('days');
@@ -174,13 +288,45 @@ async function load() {
   if (!data.projects.length) { out.innerHTML = '<div class="msg">No projects in your team.</div>'; return; }
   out.innerHTML = data.projects.map(p => {
     const d = p.days, total = d.reduce((a, x) => a + x.total, 0), max = Math.max(1, ...d.map(x => x.total));
-    const rows = d.map(x => '<tr><td>' + x.date + '</td><td class="n">' + x.total +
+    const rows = d.map(x => '<tr class="day" data-date="' + x.date + '"><td>' + x.date + '</td><td class="n">' + x.total +
       (x.total ? '<div class="bar" style="width:' + (x.total / max * 100) + '%"></div>' : '') + '</td><td class="games">' +
       Object.entries(x.games).sort((a, b) => b[1] - a[1]).map(([g, n]) => esc(g) + ' ' + n).join(' · ') + '</td></tr>').join('');
     return (data.projects.length > 1 ? '<h2>' + esc(p.project) + '</h2>' : '') +
       panel(d, total) +
       '<table><thead><tr><th>Date</th><th>Matches</th><th>By game</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }).join('');
+}
+out.addEventListener('click', async e => {
+  const btn = e.target.closest('button[data-tx]');
+  if (btn) { e.stopPropagation(); return showLog(btn); }
+  const tr = e.target.closest('tr.day');
+  if (!tr) return;
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains('detail')) { next.remove(); return; }
+  const row = document.createElement('tr'); row.className = 'detail';
+  row.innerHTML = '<td colspan="3">Loading…</td>'; tr.after(row);
+  const r = await fetch('/api/stats/matches?date=' + tr.dataset.date, {credentials: 'same-origin'});
+  const data = r.ok ? await r.json() : {matches: []};
+  row.firstChild.innerHTML = data.matches.length ? '<div class="mlist">' + data.matches.map(m =>
+    '<div><div class="mrow"><b>' + esc(m.time) + '</b><span>' + esc(m.game) + '</span><span>Winner: ' + esc(m.winner || '–') +
+    '</span><span class="sp"></span><span class="games">' + m.events + ' events</span>' +
+    '<button class="lnk" data-tx="' + esc(m.transaction_id) + '">View log</button>' +
+    '<a class="lnk" href="/api/stats/match-log/' + encodeURIComponent(m.transaction_id) + '?download=1">JSON</a></div></div>').join('') + '</div>'
+    : '<span class="games">No server logs for this day.</span>';
+});
+async function showLog(btn) {
+  const box = btn.closest('.mrow').parentElement;
+  const open = box.querySelector('.log');
+  if (open) { open.remove(); return; }
+  const r = await fetch('/api/stats/match-log/' + encodeURIComponent(btn.dataset.tx), {credentials: 'same-origin'});
+  const div = document.createElement('div'); div.className = 'log';
+  if (!r.ok) { div.textContent = 'Could not load (' + r.status + ')'; box.append(div); return; }
+  const j = await r.json();
+  const head = [j.game ? j.game : '', j.reason ? 'Result: ' + j.reason : '', j.scores ? 'Score: ' + j.scores : '']
+    .filter(Boolean).map(esc).join('\\n');
+  div.innerHTML = (head ? head + '\\n\\n' : '') + (j.events || []).map(ev =>
+    '<span class="t">' + esc(typeof ev.t === 'number' ? ev.t.toFixed(1).padStart(7) + 's' : '') + '</span>  ' + esc(ev.msg)).join('\\n');
+  box.append(div);
 }
 sel.onchange = load; load();
 </script></body></html>"""
