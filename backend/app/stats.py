@@ -220,6 +220,61 @@ def _since(days):
     return (today - days + 1) * 86400 - DAY_OFFSET
 
 
+# A pair is one-sided when the same two players met at least this often and one won at least this share.
+PAIR_MIN_MATCHES = 5
+PAIR_ONE_SIDED_SHARE = 0.8
+
+
+def _log_seconds(b):
+    ev = b.get("events") or []
+    try:
+        return float(ev[-1].get("t") or 0) if ev else None
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def _pairs(conn, ids, since):
+    """Head-to-head per pair of players from the match logs: matches, wins each, games, average length."""
+    marks = ",".join("?" * len(ids))
+    pairs = {}
+    for r in conn.execute(f"SELECT transaction_id, body, created_at FROM match_logs WHERE project_id IN ({marks}) AND created_at >= ?",
+                          (*ids, since)).fetchall():
+        try:
+            b = json.loads(r["body"])
+        except ValueError:
+            continue
+        ps = [p for p in (b.get("players") or []) if isinstance(p, dict) and p.get("id")]
+        if len(ps) != 2:
+            continue
+        a, c = sorted(ps, key=lambda p: str(p["id"]))
+        k = (str(a["id"]), str(c["id"]))
+        e = pairs.setdefault(k, {"players": {k[0]: {"id": k[0], "name": a.get("name"), "wins": 0},
+                                             k[1]: {"id": k[1], "name": c.get("name"), "wins": 0}},
+                                 "matches": 0, "games": set(), "reasons": {}, "secs": [], "tx": [], "last_at": 0})
+        e["matches"] += 1
+        wid = str(b.get("winner_id") or "")
+        if wid in e["players"]:
+            e["players"][wid]["wins"] += 1
+        if b.get("game"): e["games"].add(b.get("game"))
+        reason = str(b.get("reason") or "?")
+        e["reasons"][reason] = e["reasons"].get(reason, 0) + 1
+        sec = _log_seconds(b)
+        if sec is not None: e["secs"].append(sec)
+        e["tx"].append(r["transaction_id"])
+        e["last_at"] = max(e["last_at"], int(r["created_at"]))
+    out = []
+    for e in pairs.values():
+        if e["matches"] < 2:
+            continue
+        w, l = sorted(e["players"].values(), key=lambda p: -p["wins"])
+        out.append({"winner": w, "loser": l, "matches": e["matches"], "games": sorted(e["games"]), "reasons": e["reasons"],
+                    "avg_seconds": round(sum(e["secs"]) / len(e["secs"])) if e["secs"] else None,
+                    "one_sided": e["matches"] >= PAIR_MIN_MATCHES and w["wins"] >= PAIR_ONE_SIDED_SHARE * e["matches"],
+                    "transaction_ids": e["tx"][-20:], "last_at": e["last_at"]})
+    out.sort(key=lambda p: -p["matches"])
+    return out
+
+
 @bp.get("/api/stats/flags")
 @require_stats_reader
 def flagged_players():
@@ -261,11 +316,15 @@ def _flagged_players(days):
             wid = str(b.get("winner_id") or "")
             if not wid or wid == "draw" or not any(w in reason for w in DISCONNECT_WIN_WORDS):
                 continue
-            w = wins.setdefault(wid, {"name": b.get("winner_name"), "n": 0, "games": set(), "matches": set(), "last": 0})
+            w = wins.setdefault(wid, {"name": b.get("winner_name"), "n": 0, "games": set(), "matches": set(), "last": 0,
+                                      "list": []})
             w["n"] += 1
             if b.get("game"): w["games"].add(b.get("game"))
             w["matches"].add(r["transaction_id"])
             w["last"] = max(w["last"], int(r["created_at"]))
+            opp = next((p_ for p_ in (b.get("players") or []) if str(p_.get("id")) != wid), {})
+            w["list"].append({"transaction_id": r["transaction_id"], "game": b.get("game"), "reason": b.get("reason"),
+                              "opponent_id": opp.get("id"), "opponent": opp.get("name")})
         for wid, w in wins.items():
             if w["n"] < DISCONNECT_WIN_THRESHOLD:
                 continue
@@ -276,9 +335,26 @@ def _flagged_players(days):
             p["games"] |= w["games"]
             p["matches"] |= w["matches"]
             p["last_at"] = max(p["last_at"], w["last"])
+            p.setdefault("evidence", {})["disconnect_wins"] = w["list"][:20]
+        # Pattern: the same two players again and again, one side nearly always winning (collusion / chip dumping).
+        for pair in _pairs(conn, ids, since):
+            if not pair["one_sided"]:
+                continue
+            for side, other, role in ((pair["winner"], pair["loser"], "winner"), (pair["loser"], pair["winner"], "loser")):
+                p = players.setdefault(side["id"], {"player_id": side["id"], "name": side["name"], "count": 0, "codes": {},
+                                                    "games": set(), "matches": set(), "last_at": 0})
+                p["codes"]["one_sided_pair"] = pair["matches"]
+                p["count"] += 1
+                p["games"] |= set(pair["games"])
+                p["matches"] |= set(pair["transaction_ids"])
+                p["last_at"] = max(p["last_at"], pair["last_at"])
+                p.setdefault("evidence", {})["one_sided_pair"] = {
+                    "role": role, "with_id": other["id"], "with": other["name"], "matches": pair["matches"],
+                    "wins": side["wins"], "losses": other["wins"], "avg_seconds": pair["avg_seconds"]}
     out = [{"player_id": p["player_id"], "name": p["name"] or p["player_id"], "count": p["count"], "codes": p["codes"],
             "games": sorted(p["games"]), "matches": len(p["matches"]),
-            "last": time.strftime("%Y-%m-%d %H:%M", time.gmtime(p["last_at"] + DAY_OFFSET)) if p["last_at"] else ""}
+            "last": time.strftime("%Y-%m-%d %H:%M", time.gmtime(p["last_at"] + DAY_OFFSET)) if p["last_at"] else "",
+            **({"evidence": p["evidence"]} if p.get("evidence") else {})}
            for p in players.values()]
     out.sort(key=lambda p: (-p["count"], p["name"] or ""))
     return out
@@ -326,7 +402,10 @@ FLAG_MEANINGS = {
     "finish_too_far": "claimed the finish far from the line",
     "finish_missing_checkpoints": "claimed the finish without passing the checkpoints",
     "finish_before_start": "claimed the finish before the race started",
-    "many_disconnect_wins": "won several matches because the opponent disconnected/left (pattern)",
+    "many_disconnect_wins": "won several matches because the opponent disconnected/left (pattern; evidence lists them)",
+    "one_sided_pair": "played the same opponent many times and one side nearly always won — possible collusion / "
+                      "chip dumping (pattern; evidence names the other player)",
+    "fast_win_claim": "claimed a win unusually soon after the start (e.g. 8 ball potted seconds after the break)",
 }
 
 
@@ -389,6 +468,11 @@ def ai_export():
             g_ = b.get("game") or "?"
             results.setdefault(g_, {}).setdefault(kind, 0)
             results[g_][kind] += 1
+        pairs = [{"players": [{"id": p["winner"]["id"], "name": p["winner"]["name"], "wins": p["winner"]["wins"]},
+                              {"id": p["loser"]["id"], "name": p["loser"]["name"], "wins": p["loser"]["wins"]}],
+                  "matches": p["matches"], "games": p["games"], "reasons": p["reasons"],
+                  "avg_seconds": p["avg_seconds"], "one_sided": p["one_sided"], "transaction_ids": p["transaction_ids"]}
+                 for p in _pairs(conn, ids, since)[:30]]
     daily = []
     for d in range(today, today - days, -1):
         games = per_day.get(d, {})
@@ -397,12 +481,22 @@ def ai_export():
     for d in daily:
         for k, v in d["games"].items():
             by_game[k] = by_game.get(k, 0) + v
-    for f in flags:
-        f["time"] = time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(f.pop("created_at")) + DAY_OFFSET))
+    grouped = {}
+    for f in flags:   # newest first: the first copy keeps the latest time
+        t = time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(f.pop("created_at")) + DAY_OFFSET))
+        k = (f["player_id"], f["code"], f["transaction_id"], f["detail"])
+        if k in grouped:
+            grouped[k]["times"] += 1
+        else:
+            grouped[k] = dict(f, time=t, times=1)
+    flags = list(grouped.values())
+    with_log = {l["transaction_id"] for l in logs}
     return jsonify({
         "about": "Games Panda multiplayer stats from the match servers. Days in Pakistan time. A flag is a server-side "
                  "hint that a player did something the rules do not allow — a reason to review, not proof (a bad network "
-                 "can cause the odd one). Results by type come only from matches whose server sent a log.",
+                 "can cause the odd one). Results by type come only from matches whose server sent a log. times on a flag = "
+                 "the same flag repeated in one match. head_to_head = pairs that met 2+ times (avg_seconds = average "
+                 "match length from the log); one_sided marks 5+ meetings with one side winning 80%+.",
         "period_days": days,
         "totals": {"matches": sum(d["total"] for d in daily), "by_game": by_game},
         "daily": daily,
@@ -411,6 +505,8 @@ def ai_export():
         "flagged_players": _flagged_players(days),
         "recent_flags": flags,
         "flagged_match_logs": logs,
+        "flagged_matches_without_log": [t for t in flagged_tx if t not in with_log],
+        "head_to_head": pairs,
         "more": {"match_log": "/api/stats/match-log/<transaction_id>", "player_flags": "/api/stats/flags/<player_id>",
                  "matches_of_day": "/api/stats/matches?date=YYYY-MM-DD"},
     })
