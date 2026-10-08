@@ -5,6 +5,11 @@
   POST /api/stats/match-log  X-Api-Key; the match server's event log of one match, sent with the result:
                           {transaction_id, game_id, winner_name, reason, scores, events: [{t, time, msg}]}.
                           Stored as sent (re-sending replaces it) and counted as a played match too.
+  POST /api/stats/flag    X-Api-Key; one flagged player from the match server:
+                          {transaction_id, game, game_id, player_id, player_name, code, detail}.
+  GET  /api/stats/flags   dashboard login; ?days=30 → players with flags (counts per code, games, last flag) plus
+                          "pattern" flags worked out here (many wins because the opponent disconnected/left).
+  GET  /api/stats/flags/<player_id>  dashboard login; that player's flags, newest first.
   GET  /api/stats/daily   dashboard login; ?days=30 → per day (Pakistan time) totals and per-game counts.
   GET  /api/stats/matches dashboard login; ?date=YYYY-MM-DD → that day's matches that have a log.
   GET  /api/stats/match-log/<transaction_id>  dashboard login; the stored JSON.
@@ -147,6 +152,118 @@ def match_log(tx):
     return resp
 
 
+@bp.post("/api/stats/flag")
+def report_flag():
+    project, err = _project_from_key()
+    if err:
+        return err
+    b = request.get_json(silent=True)
+    if not isinstance(b, dict):
+        return jsonify(error="json body required"), 400
+    player = str(b.get("player_id") or "").strip()[:80]
+    code = str(b.get("code") or "").strip()[:60]
+    if not player or not code:
+        return jsonify(error="player_id and code required"), 400
+    try:
+        game_id = int(b.get("game_id") or 0)
+    except (TypeError, ValueError):
+        game_id = 0
+    with db.connect() as conn:
+        conn.execute("INSERT INTO match_flags (id, project_id, transaction_id, game_id, game, player_id, player_name, code, detail, created_at) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                     (db.new_id(), project["id"], str(b.get("transaction_id") or "")[:80] or None, game_id,
+                      str(b.get("game") or "")[:40] or None, player, str(b.get("player_name") or "")[:120] or None,
+                      code, str(b.get("detail") or "")[:300] or None, db.now()))
+    return jsonify(ok=True)
+
+
+# Wins whose reason says the opponent dropped out; several in the period is worth a look (a player may be getting
+# opponents to drop, or abusing the disconnect rule).
+DISCONNECT_WIN_WORDS = ("disconnect", "left", "forfeit")
+DISCONNECT_WIN_THRESHOLD = 3
+
+
+def _since(days):
+    today = (int(time.time()) + DAY_OFFSET) // 86400
+    return (today - days + 1) * 86400 - DAY_OFFSET
+
+
+@bp.get("/api/stats/flags")
+@require_user
+def flagged_players():
+    try:
+        days = max(1, min(366, int(request.args.get("days", 30))))
+    except ValueError:
+        days = 30
+    since = _since(days)
+    players = {}
+    with db.connect() as conn:
+        ids = _team_project_ids(conn)
+        if not ids:
+            return jsonify(players=[])
+        marks = ",".join("?" * len(ids))
+        for r in conn.execute(f"SELECT player_id, player_name, code, game, transaction_id, created_at FROM match_flags "
+                              f"WHERE project_id IN ({marks}) AND created_at >= ? ORDER BY created_at",
+                              (*ids, since)).fetchall():
+            p = players.setdefault(r["player_id"], {"player_id": r["player_id"], "name": r["player_name"], "count": 0,
+                                                    "codes": {}, "games": set(), "matches": set(), "last_at": 0})
+            p["name"] = r["player_name"] or p["name"]
+            p["count"] += 1
+            p["codes"][r["code"]] = p["codes"].get(r["code"], 0) + 1
+            if r["game"]: p["games"].add(r["game"])
+            if r["transaction_id"]: p["matches"].add(r["transaction_id"])
+            p["last_at"] = max(p["last_at"], int(r["created_at"]))
+        # Pattern: many wins by the opponent dropping out (from the match logs' winner and reason).
+        wins = {}
+        for r in conn.execute(f"SELECT transaction_id, body, created_at FROM match_logs WHERE project_id IN ({marks}) AND created_at >= ?",
+                              (*ids, since)).fetchall():
+            try:
+                b = json.loads(r["body"])
+            except ValueError:
+                continue
+            reason = str(b.get("reason") or "").lower()
+            wid = str(b.get("winner_id") or "")
+            if not wid or wid == "draw" or not any(w in reason for w in DISCONNECT_WIN_WORDS):
+                continue
+            w = wins.setdefault(wid, {"name": b.get("winner_name"), "n": 0, "games": set(), "matches": set(), "last": 0})
+            w["n"] += 1
+            if b.get("game"): w["games"].add(b.get("game"))
+            w["matches"].add(r["transaction_id"])
+            w["last"] = max(w["last"], int(r["created_at"]))
+        for wid, w in wins.items():
+            if w["n"] < DISCONNECT_WIN_THRESHOLD:
+                continue
+            p = players.setdefault(wid, {"player_id": wid, "name": w["name"], "count": 0, "codes": {}, "games": set(),
+                                         "matches": set(), "last_at": 0})
+            p["codes"]["many_disconnect_wins"] = w["n"]
+            p["count"] += 1
+            p["games"] |= w["games"]
+            p["matches"] |= w["matches"]
+            p["last_at"] = max(p["last_at"], w["last"])
+    out = [{"player_id": p["player_id"], "name": p["name"] or p["player_id"], "count": p["count"], "codes": p["codes"],
+            "games": sorted(p["games"]), "matches": len(p["matches"]),
+            "last": time.strftime("%Y-%m-%d %H:%M", time.gmtime(p["last_at"] + DAY_OFFSET)) if p["last_at"] else ""}
+           for p in players.values()]
+    out.sort(key=lambda p: (-p["count"], p["name"] or ""))
+    return jsonify(players=out, disconnect_win_threshold=DISCONNECT_WIN_THRESHOLD)
+
+
+@bp.get("/api/stats/flags/<player_id>")
+@require_user
+def player_flags(player_id):
+    with db.connect() as conn:
+        ids = _team_project_ids(conn)
+        if not ids:
+            return jsonify(flags=[])
+        marks = ",".join("?" * len(ids))
+        rows = conn.execute(f"SELECT game, code, detail, transaction_id, created_at FROM match_flags "
+                            f"WHERE project_id IN ({marks}) AND player_id = ? ORDER BY created_at DESC LIMIT 200",
+                            (*ids, player_id[:80])).fetchall()
+    return jsonify(flags=[{"game": r["game"], "code": r["code"], "detail": r["detail"], "transaction_id": r["transaction_id"],
+                           "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(r["created_at"]) + DAY_OFFSET))}
+                          for r in rows])
+
+
 @bp.post("/api/stats/match")
 def report_match():
     project, err = _project_from_key()
@@ -249,6 +366,17 @@ tr.detail td { background:var(--bg); padding:10px 12px 14px; }
 .mrow b { font-weight:600; }
 .mrow .sp { flex:1; }
 button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px solid var(--line); color:var(--accent); border-radius:6px; padding:3px 8px; cursor:pointer; }
+.flags .flist { display:flex; flex-direction:column; }
+.fp { border-top:1px solid var(--line); }
+.fp:first-child { border-top:0; }
+.fph { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:10px 16px; cursor:pointer; font-size:14px; }
+.fph:hover { background:var(--bg); }
+.fcount { background:#d9534f; color:#fff; border-radius:10px; padding:1px 8px; font-size:12px; font-weight:600; }
+.chip { background:var(--bg); border:1px solid var(--line); border-radius:10px; padding:1px 8px; font-size:12px; }
+.fdetail { padding:0 16px 12px; }
+.fempty, .fnote { padding:10px 16px; }
+.fnote { border-top:1px solid var(--line); }
+.mrow .sp { min-width:0; word-break:break-word; }
 .viewer { margin-top:8px; }
 .vbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -323,10 +451,13 @@ async function load() {
       panel(d, total) +
       '<table><thead><tr><th>Date</th><th>Matches</th><th>By game</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }).join('');
+  loadFlags();
 }
 out.addEventListener('click', async e => {
   const btn = e.target.closest('button[data-tx]');
   if (btn) { e.stopPropagation(); return showLog(btn); }
+  const fp = e.target.closest('.fph');
+  if (fp) return toggleFlags(fp.parentElement);
   const tr = e.target.closest('tr.day');
   if (!tr) return;
   const next = tr.nextElementSibling;
@@ -439,5 +570,45 @@ function drawLinks(body) {
   });
 }
 window.addEventListener('resize', () => document.querySelectorAll('.vbody').forEach(b => b.querySelector('.flow') && drawLinks(b)));
+const FLAG_LABEL = {
+  false_win_claim: 'False win claim', unbacked_win_claim: 'Unbacked win claim', out_of_turn: 'Out of turn',
+  illegal_move: 'Illegal move', finish_too_far: 'Finish far from line', finish_missing_checkpoints: 'Missed checkpoints',
+  finish_before_start: 'Finish before start', replayed_action: 'Replayed action', many_disconnect_wins: 'Many disconnect wins',
+};
+const flagLabel = c => FLAG_LABEL[c] || c;
+
+async function loadFlags() {
+  const r = await fetch('/api/stats/flags?days=' + sel.value, {credentials: 'same-origin'});
+  if (!r.ok) return;
+  const data = await r.json();
+  const box = document.createElement('div');
+  box.className = 'panel flags';
+  const rows = data.players.map(p =>
+    '<div class="fp" data-pid="' + esc(p.player_id) + '"><div class="fph"><b>' + esc(p.name) + '</b>' +
+    '<span class="fcount">' + p.count + ' flag' + (p.count === 1 ? '' : 's') + '</span>' +
+    Object.entries(p.codes).map(([c, n]) => '<span class="chip">' + esc(flagLabel(c)) + ' ×' + n + '</span>').join('') +
+    '<span class="sp"></span><span class="games">' + esc(p.games.join(', ')) + (p.last ? ' · last ' + esc(p.last) : '') + '</span></div></div>').join('');
+  box.innerHTML = '<div class="panel-h">' + FLAG_ICON + 'Flagged players</div>' +
+    (rows ? '<div class="flist">' + rows + '</div>' : '<div class="games fempty">No flagged players in this period.</div>') +
+    '<div class="games fnote">A flag means the match server saw something the rules do not allow — review the player, it is not proof. ' +
+    'Many disconnect wins = ' + data.disconnect_win_threshold + '+ wins because the opponent left.</div>';
+  const table = out.querySelector('table');
+  if (table) out.insertBefore(box, table); else out.append(box);
+}
+const FLAG_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 2h2v20H5V2zm3 1h11l-2.5 4L19 11H8V3z"/></svg>';
+
+async function toggleFlags(fp) {
+  const open = fp.querySelector('.fdetail');
+  if (open) { open.remove(); return; }
+  const r = await fetch('/api/stats/flags/' + encodeURIComponent(fp.dataset.pid), {credentials: 'same-origin'});
+  const d = document.createElement('div'); d.className = 'fdetail mlist';
+  const data = r.ok ? await r.json() : {flags: []};
+  d.innerHTML = data.flags.length ? data.flags.map(f =>
+    '<div><div class="mrow"><b>' + esc(f.time) + '</b><span>' + esc(f.game || '') + '</span><span class="chip">' + esc(flagLabel(f.code)) +
+    '</span><span class="sp">' + esc(f.detail || '') + '</span>' +
+    (f.transaction_id ? '<button class="lnk" data-tx="' + esc(f.transaction_id) + '">View log</button>' : '') + '</div></div>').join('')
+    : '<span class="games">Only the pattern flag (worked out from match results) — open the days to see those matches.</span>';
+  fp.append(d);
+}
 sel.onchange = load; load();
 </script></body></html>"""

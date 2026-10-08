@@ -160,6 +160,21 @@ _SCHEMA = [
         PRIMARY KEY (project_id, transaction_id),
         KEY idx_match_logs_time (project_id, created_at)
     ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # A player the match server flagged (a claim the rules do not back, a move out of turn …) — review, not proof.
+    """CREATE TABLE IF NOT EXISTS match_flags (
+        id             VARCHAR(32) PRIMARY KEY,
+        project_id     VARCHAR(32) NOT NULL,
+        transaction_id VARCHAR(80),
+        game_id        INT NOT NULL DEFAULT 0,
+        game           VARCHAR(40),
+        player_id      VARCHAR(80) NOT NULL,
+        player_name    VARCHAR(120),
+        code           VARCHAR(60) NOT NULL,
+        detail         VARCHAR(300),
+        created_at     BIGINT NOT NULL,
+        KEY idx_match_flags_player (project_id, player_id),
+        KEY idx_match_flags_time (project_id, created_at)
+    ) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS issues (
         id                VARCHAR(32) PRIMARY KEY,
         project_id        VARCHAR(32) NOT NULL,
