@@ -163,7 +163,7 @@ function panel(d, total) {
   return '<div class="panel"><div class="panel-h">' + CHART + 'Match Stats</div><div class="tiles">' +
     tile('c1', 'today', d[0].total, 'Today') +
     tile('c2', 'yday', d[1] ? d[1].total : 0, 'Yesterday') +
-    tile('c3', 'total', total, 'Last ' + d.length + ' days') +
+    tile('c3', 'total', total, d.length + ' days') +
     tile('c4', 'top', top ? top[1] : 0, top ? esc(top[0]) : 'Top game') + '</div></div>';
 }
 async function load() {
