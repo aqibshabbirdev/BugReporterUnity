@@ -117,13 +117,20 @@ main { max-width:900px; margin:0 auto; padding:28px 16px 48px; }
 header { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
 h1 { font-size:20px; margin:0; }
 select { font:inherit; padding:6px 10px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
-.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px; }
-.tile { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
-.tile .k { color:var(--muted); font-size:13px; }
-.tile .v { font-size:28px; font-weight:650; font-variant-numeric:tabular-nums; }
+.panel { background:var(--card); border:1px solid var(--line); border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,.12); margin-bottom:20px; }
+.panel-h { display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); font-weight:650; color:var(--muted); }
+.panel-h svg { width:16px; height:16px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; padding:12px; }
+.tile { color:#fff; border-radius:6px; padding:12px 14px; display:flex; align-items:center; justify-content:space-between; gap:10px; min-height:76px; }
+.tile svg { width:40px; height:40px; flex:none; fill:#fff; }
+.tile .num { text-align:right; min-width:0; }
+.tile .v { font-size:30px; line-height:1.1; font-variant-numeric:tabular-nums; }
+.tile .k { font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.c1 { background:#3d88cc; } .c2 { background:#5cb85c; } .c3 { background:#f0ad4e; } .c4 { background:#d9534f; }
 table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
 th, td { text-align:left; padding:9px 12px; border-top:1px solid var(--line); vertical-align:top; }
 th { border-top:0; color:var(--muted); font-weight:600; font-size:13px; }
+td:first-child { white-space:nowrap; }
 td.n { font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap; }
 .bar { height:6px; background:var(--bar); border-radius:3px; margin-top:4px; min-width:2px; }
 .games { color:var(--muted); font-size:13px; }
@@ -139,6 +146,26 @@ h2 { font-size:16px; margin:28px 0 10px; }
 <script>
 const out = document.getElementById('out'), sel = document.getElementById('days');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const I = {
+  today: '<svg viewBox="0 0 24 24"><path d="M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm-2 7h14v11H5V9zm2 2v3h3v-3H7z"/></svg>',
+  yday: '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 5v5.4l4.2 2.5-1 1.7L11 13V7h2z"/></svg>',
+  total: '<svg viewBox="0 0 24 24"><path d="M4 20h16v2H4v-2zm1-2V10h3v8H5zm5 0V4h3v14h-3zm5 0v-6h3v6h-3z"/></svg>',
+  top: '<svg viewBox="0 0 24 24"><path d="M17 3V2H7v1H3v4a4 4 0 0 0 4 4h.3A5 5 0 0 0 11 14.9V18H8v3h8v-3h-3v-3.1A5 5 0 0 0 16.7 11h.3a4 4 0 0 0 4-4V3h-4zM5 7V5h2v4a2 2 0 0 1-2-2zm14 0a2 2 0 0 1-2 2V5h2v2z"/></svg>',
+};
+const CHART = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 20h18v2H3v-2zm2-2V9h3v9H5zm5 0V4h3v14h-3zm5 0v-7h3v7h-3z"/></svg>';
+function tile(cls, icon, v, k) {
+  return '<div class="tile ' + cls + '">' + I[icon] + '<div class="num"><div class="v">' + v + '</div><div class="k">' + k + '</div></div></div>';
+}
+function panel(d, total) {
+  const games = {};
+  d.forEach(x => Object.entries(x.games).forEach(([g, n]) => games[g] = (games[g] || 0) + n));
+  const top = Object.entries(games).sort((a, b) => b[1] - a[1])[0];
+  return '<div class="panel"><div class="panel-h">' + CHART + 'Match Stats</div><div class="tiles">' +
+    tile('c1', 'today', d[0].total, 'Today') +
+    tile('c2', 'yday', d[1] ? d[1].total : 0, 'Yesterday') +
+    tile('c3', 'total', total, 'Last ' + d.length + ' days') +
+    tile('c4', 'top', top ? top[1] : 0, top ? esc(top[0]) : 'Top game') + '</div></div>';
+}
 async function load() {
   const r = await fetch('/api/stats/daily?days=' + sel.value, {credentials: 'same-origin'});
   if (r.status === 401) { out.innerHTML = '<div class="msg">Please <a href="/">sign in to the dashboard</a> first, then open this page again.</div>'; return; }
@@ -151,9 +178,7 @@ async function load() {
       (x.total ? '<div class="bar" style="width:' + (x.total / max * 100) + '%"></div>' : '') + '</td><td class="games">' +
       Object.entries(x.games).sort((a, b) => b[1] - a[1]).map(([g, n]) => esc(g) + ' ' + n).join(' · ') + '</td></tr>').join('');
     return (data.projects.length > 1 ? '<h2>' + esc(p.project) + '</h2>' : '') +
-      '<div class="tiles"><div class="tile"><div class="k">Today</div><div class="v">' + d[0].total + '</div></div>' +
-      '<div class="tile"><div class="k">Yesterday</div><div class="v">' + (d[1] ? d[1].total : 0) + '</div></div>' +
-      '<div class="tile"><div class="k">Last ' + d.length + ' days</div><div class="v">' + total + '</div></div></div>' +
+      panel(d, total) +
       '<table><thead><tr><th>Date</th><th>Matches</th><th>By game</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }).join('');
 }
