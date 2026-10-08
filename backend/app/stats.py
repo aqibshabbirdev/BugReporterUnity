@@ -231,10 +231,11 @@ select { font:inherit; padding:6px 10px; border-radius:8px; border:1px solid var
 .tile .v { font-size:30px; line-height:1.1; font-variant-numeric:tabular-nums; }
 .tile .k { font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .c1 { background:#3d88cc; } .c2 { background:#5cb85c; } .c3 { background:#f0ad4e; } .c4 { background:#d9534f; }
-table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+table { width:100%; table-layout:fixed; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:12px; overflow:hidden; }
 th, td { text-align:left; padding:9px 12px; border-top:1px solid var(--line); vertical-align:top; }
 th { border-top:0; color:var(--muted); font-weight:600; font-size:13px; }
-td:first-child { white-space:nowrap; }
+tr.day td:first-child { white-space:nowrap; }
+.viewer, .mlist { white-space:normal; }
 td.n { font-variant-numeric:tabular-nums; font-weight:600; white-space:nowrap; }
 .bar { height:6px; background:var(--bar); border-radius:3px; margin-top:4px; min-width:2px; }
 .games { color:var(--muted); font-size:13px; }
@@ -248,8 +249,35 @@ tr.detail td { background:var(--bg); padding:10px 12px 14px; }
 .mrow b { font-weight:600; }
 .mrow .sp { flex:1; }
 button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px solid var(--line); color:var(--accent); border-radius:6px; padding:3px 8px; cursor:pointer; }
-.log { margin-top:8px; max-height:420px; overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word; }
-.log .t { color:var(--muted); }
+.viewer { margin-top:8px; }
+.vbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+.seg button { font:inherit; font-size:13px; border:0; background:var(--card); color:var(--muted); padding:5px 12px; cursor:pointer; }
+.seg button.on { background:var(--accent); color:#fff; }
+pre.raw { margin:0; max-height:520px; overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.flow { background:#1d2040; border-radius:12px; padding:14px 12px; max-height:640px; overflow:auto; display:flex; flex-direction:column; gap:14px; }
+.frow { display:grid; grid-template-columns:minmax(110px,150px) 44px minmax(0,1fr); align-items:start; }
+.node { --c:#8a8fa8; background:var(--c); color:#fff; border-radius:8px; padding:9px 10px; align-self:center; box-shadow:0 2px 8px rgba(0,0,0,.25); }
+.node.start { --c:#11c58a; } .node.res { --c:#f5b301; color:#2a2100; }
+.node.p0 { --c:#13b8d6; } .node.p1 { --c:#7c4dff; } .node.p2 { --c:#ff5c8a; } .node.p3 { --c:#ff8a00; }
+.nt { font-weight:700; font-size:13px; text-transform:uppercase; letter-spacing:.02em; word-break:break-word; }
+.ns { font-size:11px; opacity:.85; }
+svg.links { width:44px; height:0; display:block; overflow:visible; }
+.evs { display:flex; flex-direction:column; gap:5px; }
+.ev { display:flex; gap:8px; align-items:baseline; border-radius:6px; padding:5px 8px; font-size:12.5px; color:#fff; background:#3a3f63; }
+.ev .ek { font-size:10px; font-weight:700; text-transform:uppercase; opacity:.85; min-width:38px; }
+.ev .em { flex:1; min-width:0; word-break:break-word; }
+.ev .et { font-size:11px; opacity:.7; white-space:nowrap; }
+.ev.shot { background:#2f62d9; } .ev.pot { background:#1e9e5a; } .ev.foul { background:#d64545; }
+th:nth-child(1) { width:118px; } th:nth-child(2) { width:96px; }
+@media (max-width:520px) {
+  th:nth-child(1) { width:96px; } th:nth-child(2) { width:70px; }
+  .frow { grid-template-columns:86px 26px minmax(0,1fr); }
+  svg.links { width:26px; }
+  .nt { font-size:11px; } .ev { font-size:11.5px; padding:4px 6px; gap:6px; } .ev .ek { display:none; }
+  .flow { padding:10px 8px; }
+}
+.ev.score { background:#e09a1a; color:#241800; } .ev.turn { background:#55597d; } .ev.res { background:#f5b301; color:#2a2100; }
 h2 { font-size:16px; margin:28px 0 10px; }
 </style></head><body><main>
 <header><h1>Multiplayer matches per day</h1>
@@ -316,17 +344,100 @@ out.addEventListener('click', async e => {
 });
 async function showLog(btn) {
   const box = btn.closest('.mrow').parentElement;
-  const open = box.querySelector('.log');
+  const open = box.querySelector('.viewer');
   if (open) { open.remove(); return; }
   const r = await fetch('/api/stats/match-log/' + encodeURIComponent(btn.dataset.tx), {credentials: 'same-origin'});
-  const div = document.createElement('div'); div.className = 'log';
-  if (!r.ok) { div.textContent = 'Could not load (' + r.status + ')'; box.append(div); return; }
+  const v = document.createElement('div'); v.className = 'viewer';
+  if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; box.append(v); return; }
   const j = await r.json();
-  const head = [j.game ? j.game : '', j.reason ? 'Result: ' + j.reason : '', j.scores ? 'Score: ' + j.scores : '']
-    .filter(Boolean).map(esc).join('\\n');
-  div.innerHTML = (head ? head + '\\n\\n' : '') + (j.events || []).map(ev =>
-    '<span class="t">' + esc(typeof ev.t === 'number' ? ev.t.toFixed(1).padStart(7) + 's' : '') + '</span>  ' + esc(ev.msg)).join('\\n');
-  box.append(div);
+  v.innerHTML = '<div class="vbar"><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button></div>' +
+    '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span></div><div class="vbody"></div>';
+  box.append(v);
+  const body = v.querySelector('.vbody');
+  const show = mode => {
+    v.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    if (mode === 'raw') { body.innerHTML = '<pre class="raw"></pre>'; body.firstChild.textContent = JSON.stringify(j, null, 2); }
+    else renderFlow(body, j);
+  };
+  v.querySelector('.seg').onclick = e => { const b = e.target.closest('button'); if (b) show(b.dataset.mode); };
+  show('flow');
 }
+
+// Event kind → card colour / label, from the [Snooker Flow] wording.
+function kindOf(msg) {
+  const m = msg.toLowerCase();
+  if (m.startsWith('result sent') || m.includes('game over') || m.startsWith('result:')) return ['res', 'Result'];
+  if (m.startsWith('foul') || m.includes('missed') || m.includes('penalty')) return ['foul', 'Foul'];
+  if (m.includes('potted the')) return ['pot', 'Pot'];
+  if (m.startsWith('score updated')) return ['score', 'Score'];
+  if (m.includes('makes the break') || m.includes(' shoots') || m.includes('automatic shot') || m.includes('timer ran out')) return ['shot', 'Shot'];
+  if (m.includes("turn ends") || m.startsWith('turn continues')) return ['turn', 'Turn'];
+  return ['info', 'Info'];
+}
+
+// Split the events into visits: match start, then one group per player turn ("turn → X"), then the result.
+function groupsOf(events) {
+  const groups = [{title: 'Match start', player: null, items: []}];
+  let cur = groups[0];
+  for (const ev of events) {
+    const msg = ev.msg || '';
+    let p = null;
+    const toss = msg.match(/^(.+) won the toss/);
+    const turn = msg.match(/^turn → (.+)$/);
+    if (toss) { cur.items.push(ev); p = toss[1]; }
+    else if (turn) p = turn[1];
+    if (p) { cur = {title: p, player: p, items: []}; groups.push(cur); if (toss) continue; continue; }
+    if (kindOf(msg)[0] === 'res') {
+      if (!cur.result) { cur = {title: 'Result', player: null, result: true, items: []}; groups.push(cur); }
+    }
+    cur.items.push(ev);
+  }
+  return groups.filter(g => g.items.length || g.player);
+}
+
+function renderFlow(body, j) {
+  const events = j.events || [];
+  if (!events.length) { body.innerHTML = '<span class="games">No events.</span>'; return; }
+  const groups = groupsOf(events);
+  const players = [];
+  groups.forEach(g => { if (g.player && !players.includes(g.player)) players.push(g.player); });
+  const pc = name => name === null ? '' : ' p' + (players.indexOf(name) % 4);
+  let turnNo = 0;
+  body.innerHTML = '<div class="flow">' + groups.map(g => {
+    const cls = g.result ? ' res' : g.player === null ? ' start' : pc(g.player);
+    const sub = g.result ? (j.scores || '') : g.player === null ? (j.game || '') : 'Turn ' + (++turnNo);
+    const t0 = g.items.length && typeof g.items[0].t === 'number' ? g.items[0].t.toFixed(0) + 's' : '';
+    return '<div class="frow"><div class="node' + cls + '"><div class="nt">' + esc(g.title) + '</div><div class="ns">' + esc(sub) +
+      (t0 ? ' · ' + t0 : '') + '</div></div><svg class="links"></svg><div class="evs">' +
+      (g.items.length ? g.items.map(ev => {
+        const k = kindOf(ev.msg || '');
+        return '<div class="ev ' + k[0] + '"><span class="ek">' + k[1] + '</span><span class="em">' + esc(ev.msg) +
+          '</span><span class="et">' + (typeof ev.t === 'number' ? ev.t.toFixed(1) + 's' : '') + '</span></div>';
+      }).join('') : '<div class="ev info"><span class="em">—</span></div>') + '</div></div>';
+  }).join('') + '</div>';
+  requestAnimationFrame(() => drawLinks(body));
+}
+
+// Curved connectors from each turn card to its event cards (redrawn on resize).
+function drawLinks(body) {
+  body.querySelectorAll('.frow').forEach(row => {
+    const svg = row.querySelector('svg.links'), node = row.querySelector('.node');
+    svg.style.height = '0px';
+    const evs = row.querySelector('.evs');
+    const h = Math.max(evs.offsetHeight, node.offsetHeight);
+    svg.style.height = h + 'px';
+    const rr = row.getBoundingClientRect(), sr = svg.getBoundingClientRect(), nr = node.getBoundingClientRect();
+    const w = sr.width;
+    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
+    const y0 = nr.top - rr.top + nr.height / 2;
+    const col = getComputedStyle(node).getPropertyValue('--c').trim() || '#888';
+    svg.innerHTML = [...row.querySelectorAll('.ev')].map(ev => {
+      const er = ev.getBoundingClientRect(), y1 = er.top - rr.top + er.height / 2;
+      return '<path d="M0 ' + y0 + ' C ' + (w * 0.55) + ' ' + y0 + ', ' + (w * 0.45) + ' ' + y1 + ', ' + w + ' ' + y1 +
+        '" fill="none" stroke="' + col + '" stroke-width="3" stroke-linecap="round" opacity=".85"/>';
+    }).join('');
+  });
+}
+window.addEventListener('resize', () => document.querySelectorAll('.vbody').forEach(b => b.querySelector('.flow') && drawLinks(b)));
 sel.onchange = load; load();
 </script></body></html>"""
