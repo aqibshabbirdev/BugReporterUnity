@@ -125,13 +125,20 @@ def matches_of_day():
             return jsonify(matches=[])
         marks = ",".join("?" * len(ids))
         rows = conn.execute(
-            f"SELECT transaction_id, game_id, winner, event_count, created_at FROM match_logs "
+            f"SELECT transaction_id, game_id, winner, event_count, created_at, body FROM match_logs "
             f"WHERE project_id IN ({marks}) AND created_at >= ? AND created_at < ? ORDER BY created_at DESC",
             (*ids, start, start + 86400)).fetchall()
-    return jsonify(matches=[{"transaction_id": r["transaction_id"], "game": _game_name(r["game_id"]),
-                             "winner": r["winner"], "events": int(r["event_count"]),
-                             "time": time.strftime("%H:%M", time.gmtime(int(r["created_at"]) + DAY_OFFSET))}
-                            for r in rows])
+    out = []
+    for r in rows:
+        try:
+            b = json.loads(r["body"])
+        except ValueError:
+            b = {}
+        out.append({"transaction_id": r["transaction_id"], "game": _game_name(r["game_id"]),
+                    "winner": r["winner"], "winner_id": b.get("winner_id"), "players": b.get("players") or [],
+                    "events": int(r["event_count"]),
+                    "time": time.strftime("%H:%M", time.gmtime(int(r["created_at"]) + DAY_OFFSET))})
+    return jsonify(matches=out)
 
 
 @bp.get("/api/stats/match-log/<tx>")
@@ -377,6 +384,8 @@ button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px so
 .fempty, .fnote { padding:10px 16px; }
 .fnote { border-top:1px solid var(--line); }
 .mrow .sp { min-width:0; word-break:break-word; }
+.uid { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:0 6px; color:var(--text); user-select:all; }
+.nid { font:11px ui-monospace,SFMono-Regular,Menlo,monospace; opacity:.9; margin-top:2px; word-break:break-all; user-select:all; }
 .viewer { margin-top:8px; }
 .vbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
@@ -468,7 +477,8 @@ out.addEventListener('click', async e => {
   const data = r.ok ? await r.json() : {matches: []};
   row.firstChild.innerHTML = data.matches.length ? '<div class="mlist">' + data.matches.map(m =>
     '<div><div class="mrow"><b>' + esc(m.time) + '</b><span>' + esc(m.game) + '</span><span>Winner: ' + esc(m.winner || '–') +
-    '</span><span class="sp"></span><span class="games">' + m.events + ' events</span>' +
+    (m.winner_id && m.winner_id !== 'draw' ? ' <span class="uid">ID ' + esc(m.winner_id) + '</span>' : '') + '</span>' +
+    (m.players.length ? '<span class="games">' + m.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>').join(' vs ') + '</span>' : '') + '<span><span class="sp"></span><span class="games">' + m.events + ' events</span>' +
     '<button class="lnk" data-tx="' + esc(m.transaction_id) + '">View log</button>' +
     '<a class="lnk" href="/api/stats/match-log/' + encodeURIComponent(m.transaction_id) + '?download=1">JSON</a></div></div>').join('') + '</div>'
     : '<span class="games">No server logs for this day.</span>';
@@ -482,7 +492,9 @@ async function showLog(btn) {
   if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; box.append(v); return; }
   const j = await r.json();
   v.innerHTML = '<div class="vbar"><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button></div>' +
-    '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span></div><div class="vbody"></div>';
+    '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span>' +
+    (j.players && j.players.length ? '<span class="games">Players: ' + j.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>' + (p.role ? ' (' + esc(p.role) + ')' : '')).join(' · ') + '</span>' : '') +
+    '</div><div class="vbody"></div>';
   box.append(v);
   const body = v.querySelector('.vbody');
   const show = mode => {
@@ -533,13 +545,18 @@ function renderFlow(body, j) {
   const players = [];
   groups.forEach(g => { if (g.player && !players.includes(g.player)) players.push(g.player); });
   const pc = name => name === null ? '' : ' p' + (players.indexOf(name) % 4);
+  const idOf = {};
+  (j.players || []).forEach(p => { if (p.name) idOf[p.name] = p.id; });
+  (j.flags || []).forEach(f => { if (f.player_name && f.player_id && !idOf[f.player_name]) idOf[f.player_name] = f.player_id; });
+  if (j.winner_name && j.winner_id && !idOf[j.winner_name]) idOf[j.winner_name] = j.winner_id;
   let turnNo = 0;
   body.innerHTML = '<div class="flow">' + groups.map(g => {
     const cls = g.result ? ' res' : g.player === null ? ' start' : pc(g.player);
     const sub = g.result ? (j.scores || '') : g.player === null ? (j.game || '') : 'Turn ' + (++turnNo);
     const t0 = g.items.length && typeof g.items[0].t === 'number' ? g.items[0].t.toFixed(0) + 's' : '';
     return '<div class="frow"><div class="node' + cls + '"><div class="nt">' + esc(g.title) + '</div><div class="ns">' + esc(sub) +
-      (t0 ? ' · ' + t0 : '') + '</div></div><svg class="links"></svg><div class="evs">' +
+      (t0 ? ' · ' + t0 : '') + '</div>' + (g.player && idOf[g.player] ? '<div class="nid">ID ' + esc(idOf[g.player]) + '</div>' : '') +
+      (g.result && j.winner_id && j.winner_id !== 'draw' ? '<div class="nid">winner ID ' + esc(j.winner_id) + '</div>' : '') + '</div><svg class="links"></svg><div class="evs">' +
       (g.items.length ? g.items.map(ev => {
         const k = kindOf(ev.msg || '');
         return '<div class="ev ' + k[0] + '"><span class="ek">' + k[1] + '</span><span class="em">' + esc(ev.msg) +
@@ -584,7 +601,7 @@ async function loadFlags() {
   const box = document.createElement('div');
   box.className = 'panel flags';
   const rows = data.players.map(p =>
-    '<div class="fp" data-pid="' + esc(p.player_id) + '"><div class="fph"><b>' + esc(p.name) + '</b>' +
+    '<div class="fp" data-pid="' + esc(p.player_id) + '"><div class="fph"><b>' + esc(p.name) + '</b><span class="uid">ID ' + esc(p.player_id) + '</span>' +
     '<span class="fcount">' + p.count + ' flag' + (p.count === 1 ? '' : 's') + '</span>' +
     Object.entries(p.codes).map(([c, n]) => '<span class="chip">' + esc(flagLabel(c)) + ' ×' + n + '</span>').join('') +
     '<span class="sp"></span><span class="games">' + esc(p.games.join(', ')) + (p.last ? ' · last ' + esc(p.last) : '') + '</span></div></div>').join('');
