@@ -812,12 +812,12 @@ async function load() {
     if (!data.projects.length) { out.innerHTML = '<div class="msg">No projects in your team yet.</div>'; }
     else out.innerHTML = data.projects.map(p => {
       const d = p.days, total = d.reduce((a,x) => a+x.total,0), max = Math.max(1,...d.map(x => x.total));
-      const rows = d.map(x => '<tr class="day" data-date="' + x.date + '"><td><button class="day-action" aria-expanded="false">' + x.date + ' ▾</button></td><td class="n">' + x.total + '</td><td class="games">' +
+      const rows = d.map(x => '<tr class="day" data-date="' + x.date + '"' + (x.total === 0 ? ' hidden' : '') + '><td><button class="day-action" aria-expanded="false">' + x.date + ' ▾</button></td><td class="n">' + x.total + '</td><td class="games">' +
         gameBreakdown(x.games) + '</td></tr>').join('');
       const chart = [...d].reverse().map(x => '<button data-day="' + x.date + '" title="' + x.date + ': ' + x.total + ' matches" aria-label="' + x.date + ': ' + x.total + ' matches. View matches"><span style="height:' + Math.max(2,x.total/max*100) + '%"></span></button>').join('');
       return '<section class="project" data-project="' + esc(p.project_id || '') + '"><h2>' + esc(p.project) + '</h2>' + panel(d,total) + (p.comparison ? '<p class="games">Last ' + p.comparison.days + ' complete days: ' + p.comparison.completed + ' matches · Previous ' + p.comparison.days + ' complete days: ' + p.comparison.previous + ' matches · ' + (p.comparison.previous ? ((p.comparison.completed-p.comparison.previous)/p.comparison.previous*100).toFixed(1)+'% change' : 'No prior baseline') + ' · Today excluded</p>' : '') +
         '<div class="panel"><div class="panel-h">Daily match trend</div><div class="chart">' + chart + '</div><div class="chart-caption"><span>' + (d.length ? d[d.length-1].date : '') + '</span><span>Click a bar to view matches</span><span>' + (d.length ? d[0].date : '') + '</span></div></div>' +
-        '<div class="toolbar"><h2>Daily breakdown</h2><label><input type="checkbox" class="hide-inactive"> Hide inactive days</label></div>' +
+        '<div class="toolbar"><h2>Daily breakdown</h2><label><input type="checkbox" class="hide-inactive" checked> Hide inactive days</label></div>' +
         '<table><thead><tr><th>Date</th><th>Matches</th><th>By game</th></tr></thead><tbody>' + rows + '</tbody></table></section>';
     }).join('');
     document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB',{timeZone:'Asia/Karachi'});
