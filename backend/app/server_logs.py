@@ -21,7 +21,6 @@ No AWS SDK: requests are signed here with Signature V4 (standard library only).
 """
 import calendar
 import datetime
-import gzip
 import hashlib
 import hmac
 import json
@@ -31,6 +30,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+import zlib
 
 from flask import Blueprint, jsonify, request
 
@@ -60,7 +60,7 @@ def _q(s):
     return urllib.parse.quote(s, safe="-_.~")
 
 
-def _get(c, path, query):
+def _get(c, path, query, first_bytes=None):
     """Signed GET (AWS Signature V4, virtual-hosted style). Returns the body bytes."""
     host = (urllib.parse.urlparse(c["endpoint"]).netloc if c["endpoint"]
             else f"{c['bucket']}.s3.{c['region']}.amazonaws.com")
@@ -80,7 +80,8 @@ def _get(c, path, query):
     for part in (day, c["region"], "s3", "aws4_request"):
         k = hmac.new(k, part.encode(), hashlib.sha256).digest()
     sig = hmac.new(k, to_sign.encode(), hashlib.sha256).hexdigest()
-    req = urllib.request.Request(f"https://{host}{canon_uri}" + (f"?{canon_q}" if canon_q else ""), headers={
+    extra = {"Range": f"bytes=0-{first_bytes - 1}"} if first_bytes else {}   # unsigned header, allowed
+    req = urllib.request.Request(f"https://{host}{canon_uri}" + (f"?{canon_q}" if canon_q else ""), headers={**extra,
         "x-amz-content-sha256": payload, "x-amz-date": amz_date,
         "Authorization": f"AWS4-HMAC-SHA256 Credential={c['key']}/{scope}, SignedHeaders={signed}, Signature={sig}"})
     with urllib.request.urlopen(req, timeout=25) as r:
@@ -176,10 +177,8 @@ def one_file():
     except Exception as e:  # noqa: BLE001
         return _err(e)
     too_big = len(raw) > MAX_FILE_BYTES
-    if raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
     q = request.args.get("q", "").strip().lower()
-    lines = [_line(r) for r in raw.decode("utf-8", "replace").splitlines() if r.strip()]
+    lines = [_line(r) for r in _text(raw).splitlines() if r.strip()]
     total = len(lines)
     if q:
         lines = [l for l in lines if q in l["text"].lower()]
@@ -189,9 +188,14 @@ def one_file():
 def _read_lines(c, key):
     raw = _get(c, "/" + key, {})
     cut = len(raw) > MAX_FILE_BYTES
+    return _text(raw), cut
+
+
+def _text(raw):
+    """Bytes → text; .gz is inflated as far as the bytes go (a cut file does not fail)."""
     if raw[:2] == b"\x1f\x8b":
-        raw = gzip.decompress(raw)
-    return raw.decode("utf-8", "replace"), cut
+        raw = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(raw, 64 * 1024 * 1024)
+    return raw.decode("utf-8", "replace")
 
 
 def _ts(iso):
@@ -208,6 +212,13 @@ _found = {}   # transaction id → log key (a finished deployment's log never ch
 @bp.get("/api/stats/server-logs/for/<tx>")
 @require_stats_reader
 def for_match(tx):
+    try:
+        return _for_match(tx)
+    except Exception as e:  # noqa: BLE001 — show the reason in the panel instead of a bare 500
+        return jsonify(error=f"Server logs failed: {type(e).__name__}: {e}"), 502
+
+
+def _for_match(tx):
     c, missing = _cfg()
     if missing:
         return jsonify(error="Server logs are not set up yet (missing " + ", ".join(missing) + ")."), 503
@@ -245,10 +256,12 @@ def for_match(tx):
                     t = _ts(f["modified"])
                     if t is not None and end - 120 <= t <= end + 6 * 3600:
                         near.append((t - end, f["key"]))
-                for _, k in sorted(near)[:25]:
-                    t_, cut_ = _read_lines(c, k)
-                    if tx in t_:
-                        key, text, cut = k, t_, cut_
+                started = time.time()
+                for _, k in sorted(near)[:15]:
+                    if time.time() - started > 12:
+                        break
+                    if tx in _text(_get(c, "/" + k, {}, first_bytes=512 * 1024)):
+                        key = k
                         break
             if not key:
                 return jsonify(error="No server log found for this match yet. Edgegap saves it when the server "
