@@ -639,6 +639,8 @@ button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px so
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .seg button { font:inherit; font-size:13px; border:0; background:var(--card); color:var(--muted); padding:5px 12px; cursor:pointer; }
 .seg button.on { background:var(--accent); color:#fff; }
+pre.srv { white-space:pre-wrap; word-break:break-word; } .lt { color:var(--muted); } .le { color:#d9534f; } .lw { color:#c77c00; } .lf { color:#2e9e57; }
+input.sq { font:inherit; padding:5px 9px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); flex:1; min-width:150px; }
 pre.raw { margin:0; max-height:520px; overflow:auto; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:10px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
 .flow { background:#1d2040; border-radius:12px; padding:14px 12px; max-height:640px; overflow:auto; display:flex; flex-direction:column; gap:14px; }
 .frow { display:grid; grid-template-columns:minmax(110px,150px) 44px minmax(0,1fr); align-items:start; }
@@ -746,7 +748,7 @@ async function showLog(btn) {
   const v = document.createElement('div'); v.className = 'viewer';
   if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; box.append(v); return; }
   const j = await r.json();
-  v.innerHTML = '<div class="vbar"><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button></div>' +
+  v.innerHTML = '<div class="vbar"><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button><button data-mode="srv">Server logs</button></div>' +
     '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span>' +
     (j.players && j.players.length ? '<span class="games">Players: ' + j.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>' + (p.role ? ' (' + esc(p.role) + ')' : '')).join(' · ') + '</span>' : '') +
     '</div><div class="vbody"></div>';
@@ -755,10 +757,46 @@ async function showLog(btn) {
   const show = mode => {
     v.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     if (mode === 'raw') { body.innerHTML = '<pre class="raw"></pre>'; body.firstChild.textContent = JSON.stringify(j, null, 2); }
+    else if (mode === 'srv') serverLogs(body, btn.dataset.tx);
     else renderFlow(body, j);
   };
   v.querySelector('.seg').onclick = e => { const b = e.target.closest('button'); if (b) show(b.dataset.mode); };
   show('flow');
+}
+
+// The Edgegap container log of the server that ran this match (from the S3 bucket), with a search box.
+const SRV = {};
+async function serverLogs(body, tx) {
+  body.innerHTML = '<span class="games">Loading the server log…</span>';
+  if (!SRV[tx]) {
+    const r = await fetch('/api/stats/server-logs/for/' + encodeURIComponent(tx), {credentials: 'same-origin'});
+    const j = await r.json().catch(() => ({error: 'HTTP ' + r.status}));
+    if (!r.ok) { body.innerHTML = '<span class="games">' + esc(j.error || ('HTTP ' + r.status)) + '</span>'; return; }
+    SRV[tx] = j;
+  }
+  const j = SRV[tx];
+  body.innerHTML = '<div class="vbar"><input class="sq" placeholder="Search: Exception, [Snooker Flow], player id…">' +
+    '<button class="lnk se">Errors only</button><button class="lnk sa">All</button><button class="lnk sd">Download</button>' +
+    '<span class="games">' + esc(j.name) + ' · ' + j.total_lines + ' lines' + (j.cut ? ' (cut)' : '') + '</span></div><pre class="raw srv"></pre>';
+  const pre = body.querySelector('pre'), q = body.querySelector('.sq');
+  const draw = f => {
+    const k = (f || '').toLowerCase();
+    const rows = j.lines.filter(l => !k || l.text.toLowerCase().includes(k) || (k === '__err' && /exception|error|failed/i.test(l.text)));
+    pre.innerHTML = rows.map(l => {
+      const c = /exception|error|failed/i.test(l.text) ? 'le' : /warn/i.test(l.text) ? 'lw' : /flow]|result sent/i.test(l.text) ? 'lf' : '';
+      return (l.time ? '<span class="lt">' + esc(l.time.replace('T', ' ').slice(0, 23)) + '</span>  ' : '') +
+        (c ? '<span class="' + c + '">' + esc(l.text) + '</span>' : esc(l.text));
+    }).join(String.fromCharCode(10)) || '(no lines)';
+  };
+  q.oninput = () => draw(q.value.trim());
+  body.querySelector('.se').onclick = () => { q.value = ''; draw('__err'); };
+  body.querySelector('.sa').onclick = () => { q.value = ''; draw(''); };
+  body.querySelector('.sd').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([j.lines.map(l => (l.time ? l.time + '  ' : '') + l.text).join(String.fromCharCode(10))], {type: 'text/plain'}));
+    a.download = 'server-' + tx + '.txt'; a.click();
+  };
+  draw('');
 }
 
 // Event kind → card colour / label, from the [Snooker Flow] wording.
