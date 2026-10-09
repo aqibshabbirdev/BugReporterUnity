@@ -56,3 +56,10 @@ The authenticated production page showed four colorful KPI cards, a large flagge
 
 ## Verification limits
 The implemented scope is deployed. The tests above distinguish live verification from fixtures. No database migrations were required. Keep the saved source/index backup for rollback; older hashed JS assets remain on the server for cached pages. The sample-match upstream log-source failure remains an operational limitation.
+
+## Visual refinement — 2026-10-09
+- Replaced native edge-aligned select arrows with a consistent 16px chevron inset and 48px text clearance across all select controls.
+- Grouped filters into labelled responsive columns; timezone and update metadata have a separate aligned row.
+- Defined navy text, indigo actions, teal activity and amber review tokens, including dark-mode equivalents.
+- Refined header hierarchy, underline navigation, tinted KPI surfaces, table spacing, chart guides and hover/focus/disabled states.
+- Browser verification confirmed 48px right padding, 16px arrow inset and no horizontal overflow at 390px.
