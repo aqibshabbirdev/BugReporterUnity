@@ -18,6 +18,7 @@
 import calendar
 import functools
 import json
+import os
 import secrets
 import time
 
@@ -132,7 +133,20 @@ def report_match_log():
 
 
 def _team_project_ids(conn):
-    return [r["id"] for r in conn.execute("SELECT id FROM projects WHERE team_id = ?", (g.user["team_id"],)).fetchall()]
+    ids = [r["id"] for r in conn.execute("SELECT id FROM projects WHERE team_id = ?", (g.user["team_id"],)).fetchall()]
+    selected = request.args.get("project_id")
+    return [i for i in ids if str(i) == selected] if selected else ids
+
+
+def _game_filter():
+    selected = request.args.get("game_id", "")
+    if not selected:
+        return ""
+    try:
+        return " AND game_id = " + str(int(selected))
+    except ValueError:
+        return " AND 1 = 0"
+
 
 
 @bp.get("/api/stats/matches")
@@ -151,7 +165,7 @@ def matches_of_day():
         marks = ",".join("?" * len(ids))
         rows = conn.execute(
             f"SELECT transaction_id, game_id, winner, event_count, created_at, body FROM match_logs "
-            f"WHERE project_id IN ({marks}) AND created_at >= ? AND created_at < ? ORDER BY created_at DESC",
+            f"WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ? AND created_at < ? ORDER BY created_at DESC",
             (*ids, start, start + 86400)).fetchall()
     out = []
     for r in rows:
@@ -237,7 +251,7 @@ def _pairs(conn, ids, since):
     """Head-to-head per pair of players from the match logs: matches, wins each, games, average length."""
     marks = ",".join("?" * len(ids))
     pairs = {}
-    for r in conn.execute(f"SELECT transaction_id, body, created_at FROM match_logs WHERE project_id IN ({marks}) AND created_at >= ?",
+    for r in conn.execute(f"SELECT transaction_id, body, created_at FROM match_logs WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ?",
                           (*ids, since)).fetchall():
         try:
             b = json.loads(r["body"])
@@ -294,7 +308,7 @@ def _flagged_players(days):
             return []
         marks = ",".join("?" * len(ids))
         for r in conn.execute(f"SELECT player_id, player_name, code, game, transaction_id, created_at FROM match_flags "
-                              f"WHERE project_id IN ({marks}) AND created_at >= ? ORDER BY created_at",
+                              f"WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ? ORDER BY created_at",
                               (*ids, since)).fetchall():
             p = players.setdefault(r["player_id"], {"player_id": r["player_id"], "name": r["player_name"], "count": 0,
                                                     "codes": {}, "games": set(), "matches": set(), "last_at": 0})
@@ -306,7 +320,7 @@ def _flagged_players(days):
             p["last_at"] = max(p["last_at"], int(r["created_at"]))
         # Pattern: many wins by the opponent dropping out (from the match logs' winner and reason).
         wins = {}
-        for r in conn.execute(f"SELECT transaction_id, body, created_at FROM match_logs WHERE project_id IN ({marks}) AND created_at >= ?",
+        for r in conn.execute(f"SELECT transaction_id, body, created_at FROM match_logs WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ?",
                               (*ids, since)).fetchall():
             try:
                 b = json.loads(r["body"])
@@ -369,8 +383,8 @@ def player_flags(player_id):
             return jsonify(flags=[])
         marks = ",".join("?" * len(ids))
         rows = conn.execute(f"SELECT game, code, detail, transaction_id, created_at FROM match_flags "
-                            f"WHERE project_id IN ({marks}) AND player_id = ? ORDER BY created_at DESC LIMIT 200",
-                            (*ids, player_id[:80])).fetchall()
+                            f"WHERE project_id IN ({marks}){_game_filter()} AND player_id = ? AND created_at >= ? ORDER BY created_at DESC LIMIT 200",
+                            (*ids, player_id[:80], _since(max(1, min(366, request.args.get("days", 30, type=int) or 30))))).fetchall()
     return jsonify(flags=[{"game": r["game"], "code": r["code"], "detail": r["detail"], "transaction_id": r["transaction_id"],
                            "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime(int(r["created_at"]) + DAY_OFFSET))}
                           for r in rows])
@@ -427,13 +441,13 @@ def ai_export():
         marks = ",".join("?" * len(ids))
         per_day = {}
         for r in conn.execute(f"SELECT FLOOR((created_at + ?) / 86400) AS d, game_id, COUNT(*) AS n FROM match_sessions "
-                              f"WHERE project_id IN ({marks}) AND created_at >= ? GROUP BY d, game_id",
+                              f"WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ? GROUP BY d, game_id",
                               (DAY_OFFSET, *ids, since)).fetchall():
             day = per_day.setdefault(int(r["d"]), {})
             day[_game_name(r["game_id"])] = day.get(_game_name(r["game_id"]), 0) + int(r["n"])
         flags = [dict(r) for r in conn.execute(
             f"SELECT player_id, player_name, game, code, detail, transaction_id, created_at FROM match_flags "
-            f"WHERE project_id IN ({marks}) AND created_at >= ? ORDER BY created_at DESC LIMIT 300", (*ids, since)).fetchall()]
+            f"WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ? ORDER BY created_at DESC LIMIT 300", (*ids, since)).fetchall()]
         flagged_tx = []
         for f in flags:
             if f["transaction_id"] and f["transaction_id"] not in flagged_tx:
@@ -455,7 +469,7 @@ def ai_export():
                              "events": [e.get("msg") for e in (ev[:80] + ev[-40:] if len(ev) > 120 else ev)],
                              "events_total": len(ev)})
         results = {}
-        for r in conn.execute(f"SELECT body FROM match_logs WHERE project_id IN ({marks}) AND created_at >= ?",
+        for r in conn.execute(f"SELECT body FROM match_logs WHERE project_id IN ({marks}){_game_filter()} AND created_at >= ?",
                               (*ids, since)).fetchall():
             try:
                 b = json.loads(r["body"])
@@ -546,11 +560,14 @@ def daily():
         projects = conn.execute("SELECT id, name FROM projects WHERE team_id = ? ORDER BY created_at",
                                 (g.user["team_id"],)).fetchall()
         out = []
+        allowed = _team_project_ids(conn)
         for p in projects:
+            if p["id"] not in allowed:
+                continue
             rows = conn.execute(
                 "SELECT FLOOR((created_at + ?) / 86400) AS d, game_id, COUNT(*) AS n FROM match_sessions "
-                "WHERE project_id = ? AND created_at >= ? GROUP BY d, game_id",
-                (DAY_OFFSET, p["id"], since)).fetchall()
+                f"WHERE project_id = ?{_game_filter()} AND created_at >= ? GROUP BY d, game_id",
+                (DAY_OFFSET, p["id"], (today - 2 * days) * 86400 - DAY_OFFSET)).fetchall()
             per_day = {}
             for r in rows:
                 day = per_day.setdefault(int(r["d"]), {"total": 0, "games": {}})
@@ -562,8 +579,13 @@ def daily():
                 v = per_day.get(d, {"total": 0, "games": {}})
                 series.append({"date": time.strftime("%Y-%m-%d", time.gmtime(d * 86400)),
                                "total": v["total"], "games": v["games"]})
-            out.append({"project": p["name"], "days": series})
-    return jsonify(projects=out)
+            completed = sum(v["total"] for d, v in per_day.items() if today - days <= d < today)
+            previous = sum(v["total"] for d, v in per_day.items() if today - 2 * days <= d < today - days)
+            out.append({"project_id": p["id"], "project": p["name"], "days": series,
+                        "comparison": {"days": days, "completed": completed, "previous": previous}})
+    return jsonify(projects=out, sample_data=os.environ.get("BR_STATS_SAMPLE_DATA", "").lower() in ("1", "true"),
+                   filters={"projects": [{"id": p["id"], "name": p["name"]} for p in projects],
+                            "games": [{"id": k, "name": v} for k, v in GAME_NAMES.items()]})
 
 
 @bp.get("/stats")
@@ -635,6 +657,9 @@ button.lnk, a.lnk { font:inherit; font-size:13px; background:none; border:1px so
 .airow input { font:inherit; padding:6px 8px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--text); }
 #ai-prompt { width:100%; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; border:1px solid var(--line); border-radius:8px; padding:8px; background:var(--bg); color:var(--text); }
 .viewer { margin-top:8px; }
+dialog.viewer { position:fixed; inset:0 0 0 auto; margin:0; width:min(900px,95vw); max-width:95vw; height:100dvh; max-height:100dvh; overflow:auto; border:1px solid var(--line); background:var(--card); color:var(--text); padding:20px; }
+dialog.viewer::backdrop { background:rgba(0,0,0,.55); }
+@media(max-width:600px) { dialog.viewer { width:100vw; max-width:100vw; padding:12px; } }
 .vbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:8px; }
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
 .seg button { font:inherit; font-size:13px; border:0; background:var(--card); color:var(--muted); padding:5px 12px; cursor:pointer; }
@@ -666,9 +691,41 @@ th:nth-child(1) { width:118px; } th:nth-child(2) { width:96px; }
 }
 .ev.score { background:#e09a1a; color:#241800; } .ev.turn { background:#55597d; } .ev.res { background:#f5b301; color:#2a2100; }
 h2 { font-size:16px; margin:28px 0 10px; }
+/* Analytics workspace */
+main { max-width:1200px; }
+header h1 { font-size:26px; }
+.back { display:inline-block; margin-bottom:12px; text-decoration:none; }
+.toolbar, .tabs { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+button, select { min-height:44px; }
+button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline:3px solid var(--accent); outline-offset:3px; }
+.tabs button, .secondary { border:1px solid var(--line); border-radius:10px; padding:8px 16px; background:var(--card); color:var(--text); cursor:pointer; }
+.tabs button[aria-pressed="true"] { background:var(--accent); color:white; }
+[hidden] { display:none !important; }
+.tile { background:var(--card); color:var(--text); border:1px solid var(--line); border-radius:12px; }
+.tile svg { fill:var(--accent); width:28px; height:28px; }
+.panel { border-radius:12px; box-shadow:0 2px 8px rgba(0,0,0,.04); }
+.day-action { font:inherit; border:0; background:transparent; color:var(--accent); cursor:pointer; text-align:left; padding:0; }
+.chart { display:flex; gap:4px; align-items:flex-end; height:180px; padding:12px 16px 0; overflow-x:auto; }
+.chart button { flex:1; min-width:16px; height:100%; display:flex; align-items:flex-end; padding:0; border:0; background:transparent; cursor:pointer; }
+.chart span { display:block; width:100%; background:var(--accent); border-radius:4px 4px 0 0; min-height:3px; }
+.chart-caption { padding:8px 16px 16px; display:flex; justify-content:space-between; font-size:13px; color:var(--muted); }
+.fph { width:100%; border:0; background:transparent; color:var(--text); text-align:left; }
+.fph .sp { flex:1; }
+.fnote { background:var(--bg); border-bottom:1px solid var(--line); }
+.mrow { padding:14px; gap:12px; }
+.lnk { min-height:44px; display:inline-flex; align-items:center; }
+.skeleton { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin:20px 0; }
+.skeleton div { height:110px; background:var(--line); border-radius:12px; }
+.copy-id { font:12px ui-monospace,monospace; border:1px solid var(--line); background:var(--bg); color:var(--text); border-radius:6px; padding:4px 8px; cursor:pointer; overflow-wrap:anywhere; }
+.match-tools { display:flex; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+.match-tools input { flex:1; min-width:150px; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); }
+.breakdown { display:flex; flex-wrap:wrap; gap:4px; }
+.status { color:var(--muted); font-size:13px; }
+@media(max-width:600px) { .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } .tile { padding:12px; } .tile svg { display:none; } .tile .num { text-align:left; } .tile .k { white-space:normal; } header h1 { font-size:22px; } .toolbar { gap:8px; } th,td { padding:8px; } .chart { height:140px; } .mrow { flex-direction:column; align-items:flex-start; } }
 </style></head><body><main>
-<header><h1>Multiplayer matches per day</h1><div class="hright"><button id="ai-btn" class="aibtn">✦ Analyze with AI</button>
-<select id="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></div></header>
+<a class="back" href="/">← Back to dashboard</a><header><h1>Match Analytics</h1><button id="ai-btn" class="aibtn">Copy AI analysis prompt</button></header>
+<div class="toolbar"><label for="days">Period</label><select id="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select><label for="project-filter">Project</label><select id="project-filter"><option value="">All projects</option></select><label for="game-filter">Game</label><select id="game-filter"><option value="">All games</option></select><button id="refresh" class="secondary">Refresh</button><span class="status">PKT · UTC+5</span><span id="updated" class="status" role="status"></span></div>
+<div class="tabs" aria-label="Analytics views"><button id="overview-tab" aria-pressed="true">Overview</button><button id="flags-tab" aria-pressed="false">Player flags</button></div>
 <div id="ai-box" class="panel aibox" hidden><div class="panel-h">✦ Analyze with AI (Claude Code / Codex)</div><div class="aibody">
 <p class="games">Copies a ready prompt with a <b>read-only</b> token (stats only, 7 days). Paste it into Claude Code or Codex — it reads the data and writes the review on your own subscription. No AI API is used.</p>
 <div class="airow"><label>Period <select id="ai-days"><option value="1">Today</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></label>
@@ -676,12 +733,27 @@ h2 { font-size:16px; margin:28px 0 10px; }
 <label>User ID (optional) <input id="ai-player" placeholder="focus on one player"></label>
 <button id="ai-copy" class="aibtn">Copy prompt</button></div>
 <div id="ai-status" class="games"></div><textarea id="ai-prompt" rows="10" hidden></textarea></div></div>
-<div id="out"><div class="msg">Loading…</div></div>
+<p id="sample-banner" class="msg" hidden>Sample data — use this view for demonstration, not production decisions.</p><div id="out" aria-live="polite"><div class="msg">Loading analytics…</div></div><section id="flags-out" hidden aria-live="polite"></section>
 <p class="games">Counted once per challenge when a player connects to its match server. Days in Pakistan time. Tap a day to see its matches and their server logs.</p>
 </main>
 <script>
 const out = document.getElementById('out'), sel = document.getElementById('days');
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function playerId(id) {
+  const value = String(id || '');
+  return '<button class="copy-id" data-copy-id="' + esc(value) + '" title="' + esc(value) + '" aria-label="Copy player ID ' + esc(value) + '">ID ' + esc(value.length > 16 ? value.slice(0,8) + '…' + value.slice(-4) : value) + '</button>';
+}
+document.addEventListener('click', async e => {
+  const button = e.target.closest('[data-copy-id]'); if(!button) return;
+  try { await navigator.clipboard.writeText(button.dataset.copyId); button.textContent = 'Copied'; }
+  catch(e) { button.textContent = button.dataset.copyId; button.title = 'Select and copy this ID'; }
+});
+function gameBreakdown(games) {
+  const values = Object.entries(games).sort((a,b) => b[1]-a[1]);
+  const chip = ([g,n]) => '<span class="chip">' + esc(g) + ' ' + n + '</span>';
+  return values.length ? '<div class="breakdown">' + values.slice(0,3).map(chip).join('') + '</div>' +
+    (values.length > 3 ? '<details><summary>+' + (values.length-3) + ' more games</summary><div class="breakdown">' + values.slice(3).map(chip).join('') + '</div></details>' : '') : 'No matches';
+}
 const I = {
   today: '<svg viewBox="0 0 24 24"><path d="M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7zm-2 7h14v11H5V9zm2 2v3h3v-3H7z"/></svg>',
   yday: '<svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 5v5.4l4.2 2.5-1 1.7L11 13V7h2z"/></svg>',
@@ -697,50 +769,117 @@ function panel(d, total) {
   d.forEach(x => Object.entries(x.games).forEach(([g, n]) => games[g] = (games[g] || 0) + n));
   const top = Object.entries(games).sort((a, b) => b[1] - a[1])[0];
   return '<div class="panel"><div class="panel-h">' + CHART + 'Match Stats</div><div class="tiles">' +
-    tile('c1', 'today', d[0].total, 'Today') +
+    tile('c1', 'today', d[0] ? d[0].total : 0, 'Today · in progress') +
     tile('c2', 'yday', d[1] ? d[1].total : 0, 'Yesterday') +
     tile('c3', 'total', total, d.length + ' days') +
-    tile('c4', 'top', top ? top[1] : 0, top ? esc(top[0]) : 'Top game') + '</div></div>';
+    tile('c4', 'top', top ? top[1] : 0, top ? 'Top game · ' + esc(top[0]) : 'Top game') + '</div></div>';
 }
+let loadVersion = 0;
+const projectFilter = document.getElementById('project-filter'), gameFilter = document.getElementById('game-filter');
+function scopeQuery(project = projectFilter.value) { return '&project_id=' + encodeURIComponent(project) + '&game_id=' + encodeURIComponent(gameFilter.value); }
+function loadingState() { return '<div class="skeleton" role="status" aria-label="Loading analytics"><div></div><div></div><div></div></div>'; }
+
+function setView(flags) {
+  out.hidden = flags; document.getElementById('flags-out').hidden = !flags;
+  document.getElementById('overview-tab').setAttribute('aria-pressed', String(!flags));
+  document.getElementById('flags-tab').setAttribute('aria-pressed', String(flags));
+}
+document.getElementById('overview-tab').onclick = () => setView(false);
+document.getElementById('flags-tab').onclick = () => setView(true);
+function errorMessage(message) { return '<div class="msg">' + esc(message) + ' <button class="secondary" data-retry>Retry</button></div>'; }
 async function load() {
-  const r = await fetch('/api/stats/daily?days=' + sel.value, {credentials: 'same-origin'});
-  if (r.status === 401) { out.innerHTML = '<div class="msg">Please <a href="/">sign in to the dashboard</a> first, then open this page again.</div>'; return; }
-  if (!r.ok) { out.innerHTML = '<div class="msg">Could not load stats (' + r.status + ').</div>'; return; }
-  const data = await r.json();
-  if (!data.projects.length) { out.innerHTML = '<div class="msg">No projects in your team.</div>'; return; }
-  out.innerHTML = data.projects.map(p => {
-    const d = p.days, total = d.reduce((a, x) => a + x.total, 0), max = Math.max(1, ...d.map(x => x.total));
-    const rows = d.map(x => '<tr class="day" data-date="' + x.date + '"><td>' + x.date + '</td><td class="n">' + x.total +
-      (x.total ? '<div class="bar" style="width:' + (x.total / max * 100) + '%"></div>' : '') + '</td><td class="games">' +
-      Object.entries(x.games).sort((a, b) => b[1] - a[1]).map(([g, n]) => esc(g) + ' ' + n).join(' · ') + '</td></tr>').join('');
-    return (data.projects.length > 1 ? '<h2>' + esc(p.project) + '</h2>' : '') +
-      panel(d, total) +
-      '<table><thead><tr><th>Date</th><th>Matches</th><th>By game</th></tr></thead><tbody>' + rows + '</tbody></table>';
-  }).join('');
-  loadFlags();
+  const version = ++loadVersion;
+  out.innerHTML = loadingState();
+  document.getElementById('flags-out').innerHTML = '<div class="msg">Loading player flags…</div>';
+  document.getElementById('updated').textContent = '';
+  try {
+    const r = await fetch('/api/stats/daily?days=' + sel.value + scopeQuery(), {credentials:'same-origin'});
+    if (version !== loadVersion) return;
+    if (r.status === 401) {
+      out.innerHTML = '<div class="msg">Sign in to view your match analytics. <a href="/login?next=%2Fstats">Sign in to dashboard</a></div>';
+      document.getElementById('flags-out').innerHTML = out.innerHTML; return;
+    }
+    if (!r.ok) throw new Error('Could not load analytics (' + r.status + ').');
+    const data = await r.json();
+    if (version !== loadVersion) return;
+    if(data.filters) {
+      for(const [select, items, label] of [[projectFilter,data.filters.projects,'All projects'],[gameFilter,data.filters.games,'All games']]) {
+        const value = select.value;
+        select.innerHTML = '<option value="">' + label + '</option>' + items.map(i => '<option value="' + esc(i.id) + '">' + esc(i.name) + '</option>').join(''); select.value = value;
+      }
+    }
+    document.getElementById('sample-banner').hidden = !data.sample_data;
+    if (!data.projects.length) { out.innerHTML = '<div class="msg">No projects in your team yet.</div>'; }
+    else out.innerHTML = data.projects.map(p => {
+      const d = p.days, total = d.reduce((a,x) => a+x.total,0), max = Math.max(1,...d.map(x => x.total));
+      const rows = d.map(x => '<tr class="day" data-date="' + x.date + '"><td><button class="day-action" aria-expanded="false">' + x.date + ' ▾</button></td><td class="n">' + x.total + '</td><td class="games">' +
+        gameBreakdown(x.games) + '</td></tr>').join('');
+      const chart = [...d].reverse().map(x => '<button data-day="' + x.date + '" title="' + x.date + ': ' + x.total + ' matches" aria-label="' + x.date + ': ' + x.total + ' matches. View matches"><span style="height:' + Math.max(2,x.total/max*100) + '%"></span></button>').join('');
+      return '<section class="project" data-project="' + esc(p.project_id || '') + '"><h2>' + esc(p.project) + '</h2>' + panel(d,total) + (p.comparison ? '<p class="games">Last ' + p.comparison.days + ' complete days: ' + p.comparison.completed + ' matches · Previous ' + p.comparison.days + ' complete days: ' + p.comparison.previous + ' matches · ' + (p.comparison.previous ? ((p.comparison.completed-p.comparison.previous)/p.comparison.previous*100).toFixed(1)+'% change' : 'No prior baseline') + ' · Today excluded</p>' : '') +
+        '<div class="panel"><div class="panel-h">Daily match trend</div><div class="chart">' + chart + '</div><div class="chart-caption"><span>' + (d.length ? d[d.length-1].date : '') + '</span><span>Click a bar to view matches</span><span>' + (d.length ? d[0].date : '') + '</span></div></div>' +
+        '<div class="toolbar"><h2>Daily breakdown</h2><label><input type="checkbox" class="hide-inactive"> Hide inactive days</label></div>' +
+        '<table><thead><tr><th>Date</th><th>Matches</th><th>By game</th></tr></thead><tbody>' + rows + '</tbody></table></section>';
+    }).join('');
+    document.getElementById('updated').textContent = 'Updated ' + new Date().toLocaleTimeString('en-GB',{timeZone:'Asia/Karachi'});
+    loadFlags(version);
+  } catch(e) { if(version === loadVersion) { out.innerHTML = errorMessage(e.message || 'Connection failed.'); document.getElementById('flags-out').innerHTML = errorMessage('Analytics could not be loaded.'); } }
 }
+out.addEventListener('change', e => {
+  if (!e.target.matches('.hide-inactive')) return;
+  e.target.closest('.project').querySelectorAll('tr.day').forEach(row => {
+    row.hidden = e.target.checked && Number(row.querySelector('.n').textContent) === 0;
+    if(row.nextElementSibling?.classList.contains('detail')) row.nextElementSibling.hidden = row.hidden;
+  });
+});
 out.addEventListener('click', async e => {
+  if(e.target.closest('[data-retry]')) return load();
+  const chartDay = e.target.closest('[data-day]');
+  if(chartDay) { const row = [...chartDay.closest('.project').querySelectorAll('tr.day')].find(r => r.dataset.date === chartDay.dataset.day); row.hidden = false; row.scrollIntoView({block:'center',behavior:'smooth'}); if(!row.nextElementSibling?.classList.contains('detail')) row.querySelector('button').click(); return; }
   const btn = e.target.closest('button[data-tx]');
   if (btn) { e.stopPropagation(); return showLog(btn); }
   const fp = e.target.closest('.fph');
   if (fp) return toggleFlags(fp.parentElement);
+  if(e.target.closest('details, [data-copy-id]')) return;
   const tr = e.target.closest('tr.day');
   if (!tr) return;
   const next = tr.nextElementSibling;
-  if (next && next.classList.contains('detail')) { next.remove(); return; }
+  if (next && next.classList.contains('detail')) { next.remove(); tr.querySelector('button').setAttribute('aria-expanded','false'); return; }
+  tr.querySelector('button').setAttribute('aria-expanded','true');
   const row = document.createElement('tr'); row.className = 'detail';
   row.innerHTML = '<td colspan="3">Loading…</td>'; tr.after(row);
-  const r = await fetch('/api/stats/matches?date=' + tr.dataset.date, {credentials: 'same-origin'});
-  const data = r.ok ? await r.json() : {matches: []};
-  row.firstChild.innerHTML = data.matches.length ? '<div class="mlist">' + data.matches.map(m =>
-    '<div><div class="mrow"><b>' + esc(m.time) + '</b><span>' + esc(m.game) + '</span><span>Winner: ' + esc(m.winner || '–') +
-    (m.winner_id && m.winner_id !== 'draw' ? ' <span class="uid">ID ' + esc(m.winner_id) + '</span>' : '') + '</span>' +
-    (m.players.length ? '<span class="games">' + m.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>').join(' vs ') + '</span>' : '') + '<span><span class="sp"></span><span class="games">' + m.events + ' events</span>' +
-    '<button class="lnk" data-tx="' + esc(m.transaction_id) + '">View log</button>' +
-    '<a class="lnk" href="/api/stats/match-log/' + encodeURIComponent(m.transaction_id) + '?download=1">JSON</a>' +
-    '<button class="lnk" data-tx="' + esc(m.transaction_id) + '" data-open="srv">Server logs</button></div></div>').join('') + '</div>'
-    : '<span class="games">No server logs for this day.</span>';
+  try {
+  const r = await fetch('/api/stats/matches?date=' + tr.dataset.date + scopeQuery(tr.closest('.project').dataset.project), {credentials: 'same-origin'});
+  if(!r.ok) throw new Error('Could not load matches (' + r.status + '). Close and reopen this day to retry.');
+  const data = await r.json();
+  renderMatches(row.firstChild, data.matches);
+  } catch(e) { row.firstChild.textContent = e.message || 'Connection failed. Close and reopen this day to retry.'; }
 });
+function renderMatches(target, matches) {
+  if(!matches.length) { target.textContent = 'No recorded matches for this day.'; return; }
+  target.innerHTML = '<section aria-label="Daily matches"><div class="match-tools"><input aria-label="Search matches" placeholder="Search player, ID or match…"><select aria-label="Filter matches by game"><option value="">All games</option>' +
+    [...new Set(matches.map(m => m.game))].sort().map(g => '<option>' + esc(g) + '</option>').join('') + '</select></div><div class="mlist"></div><div class="match-tools"><button class="secondary previous">Previous</button><span class="status" role="status"></span><button class="secondary next">Next</button></div></section>';
+  const search = target.querySelector('input'), game = target.querySelector('select'), list = target.querySelector('.mlist');
+  let page = 0;
+  function draw() {
+    const query = search.value.toLowerCase().trim();
+    const filtered = matches.filter(m => (!game.value || m.game === game.value) &&
+      [m.game,m.transaction_id,m.winner,m.winner_id,...(m.players || []).flatMap(p => [p.name,p.id])].join(' ').toLowerCase().includes(query));
+    const pages = Math.max(1,Math.ceil(filtered.length/10)); page = Math.min(page,pages-1);
+    list.innerHTML = filtered.slice(page*10,page*10+10).map(m =>
+      '<article><div class="mrow"><b>' + esc(m.time) + '</b><span>' + esc(m.game) + '</span><span>Winner: ' + esc(m.winner || '–') +
+      (m.winner_id && m.winner_id !== 'draw' ? ' ' + playerId(m.winner_id) : '') + '</span>' +
+      ((m.players || []).length ? '<span class="games">' + m.players.map(p => esc(p.name) + ' ' + playerId(p.id)).join(' vs ') + '</span>' : '') +
+      '<span class="games">' + esc(m.events) + ' events</span><button class="lnk" data-tx="' + esc(m.transaction_id) + '">View log</button>' +
+      '<a class="lnk" href="/api/stats/match-log/' + encodeURIComponent(m.transaction_id) + '?download=1">JSON</a>' +
+      '<button class="lnk" data-tx="' + esc(m.transaction_id) + '" data-open="srv">Server logs</button></div></article>').join('') || '<div class="msg">No matches fit these filters.</div>';
+    target.querySelector('[role="status"]').textContent = filtered.length + ' matches · Page ' + (page+1) + ' of ' + pages;
+    target.querySelector('.previous').disabled = page === 0; target.querySelector('.next').disabled = page >= pages-1;
+  }
+  search.oninput = game.onchange = () => { page = 0; draw(); };
+  target.querySelector('.previous').onclick = () => { page--; draw(); };
+  target.querySelector('.next').onclick = () => { page++; draw(); };
+  draw();
+}
 async function showLog(btn) {
   const box = btn.closest('.mrow').parentElement;
   const want = btn.dataset.open || 'flow';
@@ -750,60 +889,60 @@ async function showLog(btn) {
     if (open.dataset.mode === want) return;   // same button again closes; the other button switches view
   }
   // Put the viewer in place before loading, so a second click while loading closes it instead of opening a copy.
-  const v = document.createElement('div'); v.className = 'viewer'; v.dataset.mode = want;
-  v.innerHTML = '<span class="games">Loading…</span>'; box.append(v);
+  const v = document.createElement('dialog'); v.className = 'viewer'; v.dataset.mode = want;
+  v.innerHTML = '<span class="games">Loading…</span>'; box.append(v); v.showModal(); v.addEventListener('close', () => { v.remove(); btn.focus(); });
+  try {
   const r = await fetch('/api/stats/match-log/' + encodeURIComponent(btn.dataset.tx), {credentials: 'same-origin'});
-  if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; return; }
+  if (!r.ok) throw new Error('Could not load (' + r.status + ')');
   const j = await r.json();
-  v.innerHTML = '<div class="vbar"><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button><button data-mode="srv">Server logs</button></div>' +
+  v.innerHTML = '<div class="vbar"><button class="secondary close-viewer">Close log</button><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button><button data-mode="srv">Server logs</button></div>' +
     '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span>' +
     (j.players && j.players.length ? '<span class="games">Players: ' + j.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>' + (p.role ? ' (' + esc(p.role) + ')' : '')).join(' · ') + '</span>' : '') +
     '</div><div class="vbody"></div>';
   const body = v.querySelector('.vbody');
   const show = mode => {
-    v.dataset.mode = mode;
-    v.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+    v.dataset.mode = mode; body.dataset.mode = mode;
+    v.querySelectorAll('.seg button').forEach(b => { b.classList.toggle('on', b.dataset.mode === mode); b.setAttribute('aria-pressed',String(b.dataset.mode === mode)); });
     if (mode === 'raw') { body.innerHTML = '<pre class="raw"></pre>'; body.firstChild.textContent = JSON.stringify(j, null, 2); }
     else if (mode === 'srv') serverLogs(body, btn.dataset.tx);
     else renderFlow(body, j);
   };
   v.querySelector('.seg').onclick = e => { const b = e.target.closest('button'); if (b) show(b.dataset.mode); };
+  v.querySelector('.close-viewer').onclick = () => v.close();
   show(want);
+  } catch(e) { v.innerHTML = '<div class="msg">Could not load this log. <button class="secondary retry-log">Retry</button> <button class="secondary close-log">Close</button></div>'; v.querySelector('.close-log').onclick = () => v.close(); v.querySelector('.retry-log').onclick = () => { v.close(); showLog(btn); }; }
 }
 
 // The Edgegap container log of the server that ran this match (from the S3 bucket), with a search box.
 const SRV = {};
 async function serverLogs(body, tx) {
   body.innerHTML = '<span class="games">Loading the server log…</span>';
-  if (!SRV[tx]) {
-    const r = await fetch('/api/stats/server-logs/for/' + encodeURIComponent(tx), {credentials: 'same-origin'});
-    const j = await r.json().catch(() => ({error: 'HTTP ' + r.status}));
-    if (!r.ok) { body.innerHTML = '<span class="games">' + esc(j.error || ('HTTP ' + r.status)) + '</span>'; return; }
-    SRV[tx] = j;
-  }
-  const j = SRV[tx];
-  body.innerHTML = '<div class="vbar"><input class="sq" placeholder="Search: Exception, [Snooker Flow], player id…">' +
-    '<button class="lnk se">Errors only</button><button class="lnk sa">All</button><button class="lnk sd">Download</button>' +
-    '<span class="games">' + esc(j.name) + ' · ' + j.total_lines + ' lines' + (j.cut ? ' (cut)' : '') + '</span></div><pre class="raw srv"></pre>';
-  const pre = body.querySelector('pre'), q = body.querySelector('.sq');
-  const draw = f => {
-    const k = (f || '').toLowerCase();
-    const rows = j.lines.filter(l => !k || l.text.toLowerCase().includes(k) || (k === '__err' && /exception|error|failed/i.test(l.text)));
-    pre.innerHTML = rows.map(l => {
-      const c = /exception|error|failed/i.test(l.text) ? 'le' : /warn/i.test(l.text) ? 'lw' : /flow]|result sent/i.test(l.text) ? 'lf' : '';
-      return (l.time ? '<span class="lt">' + esc(l.time.replace('T', ' ').slice(0, 23)) + '</span>  ' : '') +
-        (c ? '<span class="' + c + '">' + esc(l.text) + '</span>' : esc(l.text));
-    }).join(String.fromCharCode(10)) || '(no lines)';
-  };
-  q.oninput = () => draw(q.value.trim());
-  body.querySelector('.se').onclick = () => { q.value = ''; draw('__err'); };
-  body.querySelector('.sa').onclick = () => { q.value = ''; draw(''); };
-  body.querySelector('.sd').onclick = () => {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([j.lines.map(l => (l.time ? l.time + '  ' : '') + l.text).join(String.fromCharCode(10))], {type: 'text/plain'}));
-    a.download = 'server-' + tx + '.txt'; a.click();
-  };
-  draw('');
+  try {
+    if (!SRV[tx]) {
+      const r = await fetch('/api/stats/server-logs/for/' + encodeURIComponent(tx), {credentials:'same-origin'});
+      const j = await r.json();
+      if(!r.ok) throw new Error(j.error || 'Could not load server logs (' + r.status + ').');
+      SRV[tx] = j;
+    }
+    const j = SRV[tx];
+    if(!body.isConnected || body.dataset.mode !== 'srv') return;
+    body.innerHTML = '<div class="vbar"><input class="sq" aria-label="Search server logs" placeholder="Search logs or player ID…"><select aria-label="Log severity"><option value="all">All levels</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Info</option></select><button class="lnk sd">Download</button><span class="games count" role="status"></span></div>' +
+      '<p class="games">' + esc(j.name) + (j.cut ? ' · Truncated: only part of the server log is available.' : '') + '</p><pre class="raw srv"></pre>';
+    const pre = body.querySelector('pre'), q = body.querySelector('input'), severity = body.querySelector('select');
+    const level = text => /exception|error|failed/i.test(text) ? 'error' : /warn/i.test(text) ? 'warning' : 'info';
+    const draw = () => {
+      const rows = j.lines.filter(l => l.text.toLowerCase().includes(q.value.trim().toLowerCase()) && (severity.value === 'all' || level(l.text) === severity.value));
+      body.querySelector('.count').textContent = rows.length + ' of ' + j.lines.length + ' loaded lines · ' + j.total_lines + ' total';
+      pre.innerHTML = rows.map(l => '<span class="' + ({error:'le',warning:'lw',info:''}[level(l.text)]) + '">' +
+        (l.time ? '<span class="lt">' + esc(l.time.replace('T',' ').slice(0,23)) + '</span>  ' : '') + esc(l.text) + '</span>').join(String.fromCharCode(10)) || 'No lines match these filters.';
+    };
+    q.oninput = severity.onchange = draw;
+    body.querySelector('.sd').onclick = () => {
+      const a = document.createElement('a'), url = URL.createObjectURL(new Blob([j.lines.map(l => (l.time ? l.time+'  ' : '')+l.text).join(String.fromCharCode(10))],{type:'text/plain'}));
+      a.href = url; a.download = 'server-'+tx+'.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
+    };
+    draw();
+  } catch(e) { body.innerHTML = '<div class="msg">' + esc(e.message || 'Connection failed.') + ' <button class="secondary">Retry server logs</button></div>'; body.querySelector('button').onclick = () => serverLogs(body,tx); }
 }
 
 // Event kind → card colour / label, from the [Snooker Flow] wording.
@@ -889,43 +1028,65 @@ function drawLinks(body) {
 window.addEventListener('resize', () => document.querySelectorAll('.vbody').forEach(b => b.querySelector('.flow') && drawLinks(b)));
 const FLAG_LABEL = {
   false_win_claim: 'False win claim', unbacked_win_claim: 'Unbacked win claim', out_of_turn: 'Out of turn',
+  roll_twice: 'Repeated roll', tampered_request: 'Invalid request', one_sided_pair: 'Repeated one-sided results', fast_win_claim: 'Unusually fast win claim',
   illegal_move: 'Illegal move', finish_too_far: 'Finish far from line', finish_missing_checkpoints: 'Missed checkpoints',
   finish_before_start: 'Finish before start', replayed_action: 'Replayed action', many_disconnect_wins: 'Many disconnect wins',
 };
 const flagLabel = c => FLAG_LABEL[c] || c;
+let flagPlayers = new Map();
+function patternEvidence(player) {
+  const evidence = player?.evidence || {};
+  let html = '';
+  if(evidence.one_sided_pair) {
+    const pair = evidence.one_sided_pair;
+    html += '<div class="msg"><b>Repeated opponent</b><p>' + esc(pair.with || pair.with_id) + ' ' + playerId(pair.with_id) + '</p><p>' + esc(pair.matches) + ' matches · ' + esc(pair.wins) + ' wins · ' + esc(pair.losses) + ' losses' + (pair.avg_seconds != null ? ' · Average '+esc(pair.avg_seconds)+' seconds' : '') + '</p></div>';
+  }
+  if(evidence.disconnect_wins?.length) html += '<div class="msg"><b>Disconnect-win evidence</b><p class="games">Up to 20 supporting matches</p>' + evidence.disconnect_wins.map(m =>
+    '<article><div class="mrow"><span>' + esc(m.game || '') + ' · ' + esc(m.reason || '') + '</span><span>Opponent: ' + esc(m.opponent || m.opponent_id || 'Unknown') + '</span>' + (m.opponent_id ? playerId(m.opponent_id) : '') + '<button class="lnk" data-tx="' + esc(m.transaction_id) + '">View log</button></div></article>').join('') + '</div>';
+  return html;
+}
 
-async function loadFlags() {
-  const r = await fetch('/api/stats/flags?days=' + sel.value, {credentials: 'same-origin'});
-  if (!r.ok) return;
+async function loadFlags(version) {
+  const target = document.getElementById("flags-out");
+  try {
+  const r = await fetch('/api/stats/flags?days=' + sel.value + scopeQuery(), {credentials: 'same-origin'});
+  if (!r.ok) throw new Error('Could not load player flags (' + r.status + ').');
   const data = await r.json();
+  if(version !== loadVersion) return;
   const box = document.createElement('div');
   box.className = 'panel flags';
+  flagPlayers = new Map(data.players.map(p => [p.player_id,p]));
   const rows = data.players.map(p =>
-    '<div class="fp" data-pid="' + esc(p.player_id) + '"><div class="fph"><b>' + esc(p.name) + '</b><span class="uid">ID ' + esc(p.player_id) + '</span>' +
-    '<span class="fcount">' + p.count + ' flag' + (p.count === 1 ? '' : 's') + '</span>' +
+    '<div class="fp" data-pid="' + esc(p.player_id) + '"><button class="fph" aria-expanded="false"><b>' + esc(p.name) + '</b><span class="uid">ID ' + esc(p.player_id) + '</span>' +
+    '<span class="fcount" title="Event flags plus generated pattern signals">' + p.count + ' review signal' + (p.count === 1 ? '' : 's') + '</span>' +
     Object.entries(p.codes).map(([c, n]) => '<span class="chip">' + esc(flagLabel(c)) + ' ×' + n + '</span>').join('') +
-    '<span class="sp"></span><span class="games">' + esc(p.games.join(', ')) + (p.last ? ' · last ' + esc(p.last) : '') + '</span></div></div>').join('');
+    '<span class="sp"></span><span class="games">' + esc(p.games.join(', ')) + (p.last ? ' · last ' + esc(p.last) : '') + '</span></button></div>').join('');
   box.innerHTML = '<div class="panel-h">' + FLAG_ICON + 'Flagged players</div>' +
+    '<div class="games fnote">Review signals need investigation; they are not proof of cheating. Pattern counts represent supporting matches and can overlap.</div>' +
     (rows ? '<div class="flist">' + rows + '</div>' : '<div class="games fempty">No flagged players in this period.</div>') +
     '<div class="games fnote">A flag means the match server saw something the rules do not allow — review the player, it is not proof. ' +
     'Many disconnect wins = ' + data.disconnect_win_threshold + '+ wins because the opponent left.</div>';
-  const table = out.querySelector('table');
-  if (table) out.insertBefore(box, table); else out.append(box);
+  target.replaceChildren(box);
+  document.getElementById('flags-tab').textContent = 'Player flags (' + data.players.length + ')';
+  } catch(e) { if(version === loadVersion) target.innerHTML = errorMessage(e.message || 'Could not load player flags.'); }
 }
 const FLAG_ICON = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 2h2v20H5V2zm3 1h11l-2.5 4L19 11H8V3z"/></svg>';
 
 async function toggleFlags(fp) {
-  const open = fp.querySelector('.fdetail');
-  if (open) { open.remove(); return; }
-  const r = await fetch('/api/stats/flags/' + encodeURIComponent(fp.dataset.pid), {credentials: 'same-origin'});
-  const d = document.createElement('div'); d.className = 'fdetail mlist';
-  const data = r.ok ? await r.json() : {flags: []};
-  d.innerHTML = data.flags.length ? data.flags.map(f =>
-    '<div><div class="mrow"><b>' + esc(f.time) + '</b><span>' + esc(f.game || '') + '</span><span class="chip">' + esc(flagLabel(f.code)) +
-    '</span><span class="sp">' + esc(f.detail || '') + '</span>' +
-    (f.transaction_id ? '<button class="lnk" data-tx="' + esc(f.transaction_id) + '">View log</button>' : '') + '</div></div>').join('')
-    : '<span class="games">Only the pattern flag (worked out from match results) — open the days to see those matches.</span>';
-  fp.append(d);
+  const header = fp.querySelector('.fph'), open = fp.querySelector('.fdetail');
+  if (open) { open.remove(); header.setAttribute('aria-expanded','false'); return; }
+  header.setAttribute('aria-expanded','true');
+  const d = document.createElement('div'); d.className = 'fdetail mlist'; d.textContent = 'Loading evidence…'; fp.append(d);
+  try {
+    const r = await fetch('/api/stats/flags/' + encodeURIComponent(fp.dataset.pid) + '?days=' + sel.value + scopeQuery(), {credentials:'same-origin'});
+    if(!r.ok) throw new Error('Could not load evidence (' + r.status + '). Close and reopen to retry.');
+    const data = await r.json();
+    d.innerHTML = (data.flags.length ? data.flags.map(f =>
+      '<div><div class="mrow"><b>' + esc(f.time) + '</b><span>' + esc(f.game || '') + '</span><span class="chip">' + esc(flagLabel(f.code)) +
+      '</span><span class="sp">' + esc(f.detail || '') + '</span>' +
+      (f.transaction_id ? '<button class="lnk" data-tx="' + esc(f.transaction_id) + '">View log</button>' : '') + '</div></div>').join('')
+      : '<span class="games">This player has pattern signals from match results. Open the Overview days to review supporting matches.</span>') + '<div>' + playerId(fp.dataset.pid) + '</div>' + patternEvidence(flagPlayers.get(fp.dataset.pid));
+  } catch(e) { d.textContent = e.message || 'Connection failed. Close and reopen to retry.'; }
 }
 // ── Analyze with AI: copies a ready prompt (with a read-only 7-day token) for Claude Code / Codex ──
 const NL = String.fromCharCode(10);
@@ -933,6 +1094,8 @@ const aiBtn = document.getElementById('ai-btn'), aiBox = document.getElementById
 aiBtn.onclick = () => { aiBox.hidden = !aiBox.hidden; };
 document.getElementById('ai-copy').onclick = async () => {
   const status = document.getElementById('ai-status'), out = document.getElementById('ai-prompt');
+  const copyButton = document.getElementById('ai-copy'); copyButton.disabled = true;
+  try {
   status.textContent = 'Making a read-only token…';
   const r = await fetch('/api/stats/ai-token', {method: 'POST', credentials: 'same-origin'});
   if (!r.ok) { status.textContent = r.status === 401 ? 'Sign in to the dashboard first.' : 'Could not make a token (' + r.status + ').'; return; }
@@ -965,6 +1128,13 @@ document.getElementById('ai-copy').onclick = async () => {
   out.hidden = false;
   try { await navigator.clipboard.writeText(out.value); status.textContent = 'Copied — paste it into Claude Code or Codex.'; }
   catch (e) { out.select(); status.textContent = 'Select the text below and copy it (the browser blocked the clipboard).'; }
+  } catch(e) { status.textContent = 'Could not prepare the prompt. Check your connection and retry.'; } finally { copyButton.disabled = false; }
 };
-sel.onchange = load; load();
+document.getElementById('flags-out').addEventListener('click', e => {
+  if(e.target.closest('[data-retry]')) return load();
+  const btn = e.target.closest('button[data-tx]'); if(btn) return showLog(btn);
+  const header = e.target.closest('.fph'); if(header) toggleFlags(header.closest('.fp'));
+});
+document.getElementById('refresh').onclick = load;
+projectFilter.onchange = gameFilter.onchange = sel.onchange = load; load();
 </script></body></html>"""

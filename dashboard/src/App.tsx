@@ -8,6 +8,14 @@ import IssueDetail from './pages/IssueDetail'
 import Settings from './pages/Settings'
 import TeamPage from './pages/Team'
 
+function LoginRedirect() {
+  if (new URLSearchParams(window.location.search).get('next') === '/stats') {
+    window.location.replace('/stats')
+    return null
+  }
+  return <Navigate to="/" />
+}
+
 function Shell({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const nav = useNavigate()
   return (
@@ -40,7 +48,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/login" element={me ? <Navigate to="/" /> : <Login onLogin={setMe} />} />
+        <Route path="/login" element={me ? <LoginRedirect /> : <Login onLogin={setMe} />} />
         {me ? (
           <Route element={<Shell me={me} onLogout={() => setMe(null)} />}>
             <Route path="/" element={<Projects />} />
