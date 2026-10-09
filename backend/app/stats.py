@@ -737,13 +737,18 @@ out.addEventListener('click', async e => {
     (m.winner_id && m.winner_id !== 'draw' ? ' <span class="uid">ID ' + esc(m.winner_id) + '</span>' : '') + '</span>' +
     (m.players.length ? '<span class="games">' + m.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>').join(' vs ') + '</span>' : '') + '<span><span class="sp"></span><span class="games">' + m.events + ' events</span>' +
     '<button class="lnk" data-tx="' + esc(m.transaction_id) + '">View log</button>' +
-    '<a class="lnk" href="/api/stats/match-log/' + encodeURIComponent(m.transaction_id) + '?download=1">JSON</a></div></div>').join('') + '</div>'
+    '<a class="lnk" href="/api/stats/match-log/' + encodeURIComponent(m.transaction_id) + '?download=1">JSON</a>' +
+    '<button class="lnk" data-tx="' + esc(m.transaction_id) + '" data-open="srv">Server logs</button></div></div>').join('') + '</div>'
     : '<span class="games">No server logs for this day.</span>';
 });
 async function showLog(btn) {
   const box = btn.closest('.mrow').parentElement;
+  const want = btn.dataset.open || 'flow';
   const open = box.querySelector('.viewer');
-  if (open) { open.remove(); return; }
+  if (open) {
+    open.remove();
+    if (open.dataset.mode === want) return;   // same button again closes; the other button switches view
+  }
   const r = await fetch('/api/stats/match-log/' + encodeURIComponent(btn.dataset.tx), {credentials: 'same-origin'});
   const v = document.createElement('div'); v.className = 'viewer';
   if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; box.append(v); return; }
@@ -755,13 +760,14 @@ async function showLog(btn) {
   box.append(v);
   const body = v.querySelector('.vbody');
   const show = mode => {
+    v.dataset.mode = mode;
     v.querySelectorAll('.seg button').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
     if (mode === 'raw') { body.innerHTML = '<pre class="raw"></pre>'; body.firstChild.textContent = JSON.stringify(j, null, 2); }
     else if (mode === 'srv') serverLogs(body, btn.dataset.tx);
     else renderFlow(body, j);
   };
   v.querySelector('.seg').onclick = e => { const b = e.target.closest('button'); if (b) show(b.dataset.mode); };
-  show('flow');
+  show(want);
 }
 
 // The Edgegap container log of the server that ran this match (from the S3 bucket), with a search box.
