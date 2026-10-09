@@ -765,6 +765,39 @@ summary { margin-top:8px; color:var(--accent); cursor:pointer; font-size:12px; }
 .status { color:var(--muted); font-size:12px; }
 @media(max-width:800px) { .filter-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; } .tiles { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:520px) { main { padding:20px 16px 40px; } .page-header { align-items:flex-start; gap:16px; } header h1 { font-size:26px; } .subtitle { font-size:13px; } .filter-panel { padding:16px 16px 0; } .filter-grid { gap:14px; } .filter-meta { gap:8px; font-size:11px; } .tiles { gap:10px; padding:12px; } .tile { padding:16px; min-height:100px; } .tile svg { width:20px; height:20px; } .tile .v { font-size:28px; } th,td { padding:10px; } th:nth-child(1) { width:120px; } th:nth-child(2) { width:72px; } .chart { height:160px; margin:16px 16px 0; } .chart-caption { padding:10px 16px 16px; } .chart-caption span:nth-child(2) { display:none; } .mrow { flex-direction:column; align-items:flex-start; } .match-tools select { width:100%; } }
+
+/* Inspector: one vertical scroll area shared by all three modes. */
+dialog.viewer { padding:0; overflow:hidden; }
+dialog.viewer[open] { display:flex; flex-direction:column; }
+.viewer-header { flex:none; padding:20px 24px 16px; background:var(--card); border-bottom:1px solid var(--line); }
+.viewer-header .vbar { margin:0; gap:12px; }
+.viewer-header .games { flex-basis:100%; }
+.vbody { flex:1; min-height:0; overflow:auto; padding:0 24px 24px; position:relative; }
+.view-tools { position:sticky; top:0; z-index:2; display:flex; gap:10px; align-items:center; flex-wrap:wrap; padding:16px 0; background:var(--card); border-bottom:1px solid var(--line); margin-bottom:16px; }
+.view-tools label { color:var(--muted); font-size:12px; white-space:nowrap; }
+.view-tools select { max-width:200px; }
+.timeline { border-left:2px solid var(--line); margin-left:6px; padding-left:18px; }
+.turn-group { margin-bottom:16px; border:1px solid var(--line); border-radius:10px; background:var(--card); overflow:hidden; }
+.turn-group summary { margin:0; padding:14px 16px; display:flex; gap:12px; align-items:center; justify-content:space-between; color:var(--text); background:var(--bg); }
+.turn-group summary::after { content:'+'; font-size:18px; color:var(--muted); }
+.turn-group[open] summary::after { content:'−'; }
+.turn-meta { display:block; margin-top:4px; color:var(--muted); font-size:12px; font-weight:400; }
+.timeline-event { display:grid; grid-template-columns:58px 64px minmax(0,1fr); gap:12px; padding:12px 16px; border-top:1px solid var(--line); align-items:start; font-size:13px; }
+.timeline-event time { color:var(--muted); font:11px/1.7 ui-monospace,monospace; }
+.event-message { overflow-wrap:anywhere; }
+.event-badge { padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700; color:var(--muted); background:var(--bg); text-align:center; }
+.pot .event-badge { background:var(--teal-soft); color:var(--teal); }
+.shot .event-badge { background:var(--soft); color:var(--accent); }
+.score .event-badge,.res .event-badge,.foul .event-badge { background:var(--amber-soft); color:var(--amber); }
+.timeline-event.score,.timeline-event.res { font-weight:600; }
+.result-group { border-color:var(--teal); }
+pre.raw { max-height:none; overflow:visible; margin:0; padding:16px; font-size:12px; line-height:1.8; white-space:pre-wrap; overflow-wrap:anywhere; word-break:normal; }
+pre.raw.nowrap { white-space:pre; overflow-wrap:normal; width:max-content; min-width:100%; }
+.log-line { display:block; padding:6px 8px; border-bottom:1px solid var(--line); }
+.log-line.le { background:var(--amber-soft); color:var(--amber); }
+.log-note { color:var(--muted); font-size:12px; margin:12px 0; overflow-wrap:anywhere; }
+mark { background:var(--amber-soft); color:var(--amber); border-radius:2px; }
+@media(max-width:600px) { .viewer-header { padding:16px; } .vbody { padding:0 16px 16px; } .view-tools { gap:8px; } .view-tools .sq { flex-basis:100%; } .view-tools select { max-width:100%; flex:1; } .timeline { margin-left:0; padding-left:8px; } .timeline-event { grid-template-columns:42px 50px minmax(0,1fr); gap:8px; padding:10px; } .turn-group summary { padding:12px; } }
 </style></head><body><main>
 <a class="back" href="/">← Dashboard</a><header class="page-header"><div><p class="eyebrow">GAMES PANDA · ANALYTICS</p><h1>Match Analytics</h1><p class="subtitle">Track match activity and investigate player signals.</p></div><button id="ai-btn" class="aibtn">✦ AI analysis prompt</button></header>
 <section class="filter-panel" aria-label="Analytics filters"><div class="filter-grid"><div class="filter-field"><label for="days">Date range</label><select id="days"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></div><div class="filter-field"><label for="project-filter">Project</label><select id="project-filter"><option value="">All projects</option></select></div><div class="filter-field"><label for="game-filter">Game</label><select id="game-filter"><option value="">All games</option></select></div><button id="refresh" class="secondary">↻ Refresh</button></div><div class="filter-meta"><span><span class="live-dot" aria-hidden="true"></span>Pakistan time <b>UTC+5</b></span><span id="updated" role="status">Loading data…</span></div></section>
@@ -938,15 +971,15 @@ async function showLog(btn) {
   const r = await fetch('/api/stats/match-log/' + encodeURIComponent(btn.dataset.tx), {credentials: 'same-origin'});
   if (!r.ok) throw new Error('Could not load (' + r.status + ')');
   const j = await r.json();
-  v.innerHTML = '<div class="vbar"><button class="secondary close-viewer">Close log</button><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button><button data-mode="srv">Server logs</button></div>' +
+  v.innerHTML = '<div class="viewer-header"><div class="vbar"><button class="secondary close-viewer">Close log</button><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button><button data-mode="srv">Server logs</button></div>' +
     '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span>' +
     (j.players && j.players.length ? '<span class="games">Players: ' + j.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>' + (p.role ? ' (' + esc(p.role) + ')' : '')).join(' · ') + '</span>' : '') +
-    '</div><div class="vbody"></div>';
+    '</div></div><div class="vbody"></div>';
   const body = v.querySelector('.vbody');
   const show = mode => {
-    v.dataset.mode = mode; body.dataset.mode = mode;
+    v.dataset.mode = mode; body.dataset.mode = mode; body.scrollTop = 0;
     v.querySelectorAll('.seg button').forEach(b => { b.classList.toggle('on', b.dataset.mode === mode); b.setAttribute('aria-pressed',String(b.dataset.mode === mode)); });
-    if (mode === 'raw') { body.innerHTML = '<pre class="raw"></pre>'; body.firstChild.textContent = JSON.stringify(j, null, 2); }
+    if (mode === 'raw') renderRaw(body,j,btn.dataset.tx);
     else if (mode === 'srv') serverLogs(body, btn.dataset.tx);
     else renderFlow(body, j);
   };
@@ -969,15 +1002,15 @@ async function serverLogs(body, tx) {
     }
     const j = SRV[tx];
     if(!body.isConnected || body.dataset.mode !== 'srv') return;
-    body.innerHTML = '<div class="vbar"><input class="sq" aria-label="Search server logs" placeholder="Search logs or player ID…"><select aria-label="Log severity"><option value="all">All levels</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Info</option></select><button class="lnk sd">Download</button><span class="games count" role="status"></span></div>' +
-      '<p class="games">' + esc(j.name) + (j.cut ? ' · Truncated: only part of the server log is available.' : '') + '</p><pre class="raw srv"></pre>';
+    body.innerHTML = '<div class="view-tools"><input class="sq" aria-label="Search server logs" placeholder="Search logs or player ID…"><select aria-label="Log severity"><option value="all">All levels</option><option value="error">Errors</option><option value="warning">Warnings</option><option value="info">Info</option></select><button class="lnk sd">Download</button><span class="games count" role="status"></span></div>' +
+      '<p class="log-note">' + esc(j.name) + (j.cut ? ' · Truncated: only part of the server log is available.' : '') + '</p><pre class="raw srv"></pre>';
     const pre = body.querySelector('pre'), q = body.querySelector('input'), severity = body.querySelector('select');
     const level = text => /exception|error|failed/i.test(text) ? 'error' : /warn/i.test(text) ? 'warning' : 'info';
     const draw = () => {
       const rows = j.lines.filter(l => l.text.toLowerCase().includes(q.value.trim().toLowerCase()) && (severity.value === 'all' || level(l.text) === severity.value));
       body.querySelector('.count').textContent = rows.length + ' of ' + j.lines.length + ' loaded lines · ' + j.total_lines + ' total';
-      pre.innerHTML = rows.map(l => '<span class="' + ({error:'le',warning:'lw',info:''}[level(l.text)]) + '">' +
-        (l.time ? '<span class="lt">' + esc(l.time.replace('T',' ').slice(0,23)) + '</span>  ' : '') + esc(l.text) + '</span>').join(String.fromCharCode(10)) || 'No lines match these filters.';
+      pre.innerHTML = rows.map(l => '<span class="log-line ' + ({error:'le',warning:'lw',info:''}[level(l.text)]) + '">' +
+        (l.time ? '<span class="lt">' + esc(l.time.replace('T',' ').slice(0,23)) + '</span>  ' : '') + esc(l.text) + '</span>').join('') || 'No lines match these filters.';
     };
     q.oninput = severity.onchange = draw;
     body.querySelector('.sd').onclick = () => {
@@ -985,7 +1018,7 @@ async function serverLogs(body, tx) {
       a.href = url; a.download = 'server-'+tx+'.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
     };
     draw();
-  } catch(e) { body.innerHTML = '<div class="msg">' + esc(e.message || 'Connection failed.') + ' <button class="secondary">Retry server logs</button></div>'; body.querySelector('button').onclick = () => serverLogs(body,tx); }
+  } catch(e) { if(!body.isConnected || body.dataset.mode !== 'srv') return; body.innerHTML = '<div class="msg">' + esc(e.message || 'Connection failed.') + ' <button class="secondary">Retry server logs</button></div>'; body.querySelector('button').onclick = () => serverLogs(body,tx); }
 }
 
 // Event kind → card colour / label, from the [Snooker Flow] wording.
@@ -1021,54 +1054,56 @@ function groupsOf(events) {
 }
 
 function renderFlow(body, j) {
-  const events = j.events || [];
-  if (!events.length) { body.innerHTML = '<span class="games">No events.</span>'; return; }
-  const groups = groupsOf(events);
-  const players = [];
-  groups.forEach(g => { if (g.player && !players.includes(g.player)) players.push(g.player); });
-  const pc = name => name === null ? '' : ' p' + (players.indexOf(name) % 4);
-  const idOf = {};
-  (j.players || []).forEach(p => { if (p.name) idOf[p.name] = p.id; });
-  (j.flags || []).forEach(f => { if (f.player_name && f.player_id && !idOf[f.player_name]) idOf[f.player_name] = f.player_id; });
-  if (j.winner_name && j.winner_id && !idOf[j.winner_name]) idOf[j.winner_name] = j.winner_id;
-  let turnNo = 0;
-  body.innerHTML = '<div class="flow">' + groups.map(g => {
-    const cls = g.result ? ' res' : g.player === null ? ' start' : pc(g.player);
-    const sub = g.result ? (j.scores || '') : g.player === null ? (j.game || '') : 'Turn ' + (++turnNo);
-    const t0 = g.items.length && typeof g.items[0].t === 'number' ? g.items[0].t.toFixed(0) + 's' : '';
-    return '<div class="frow"><div class="node' + cls + '"><div class="nt">' + esc(g.title) + '</div><div class="ns">' + esc(sub) +
-      (t0 ? ' · ' + t0 : '') + '</div>' + (g.player && idOf[g.player] ? '<div class="nid">ID ' + esc(idOf[g.player]) + '</div>' : '') +
-      (g.result && j.winner_id && j.winner_id !== 'draw' ? '<div class="nid">winner ID ' + esc(j.winner_id) + '</div>' : '') + '</div><svg class="links"></svg><div class="evs">' +
-      (g.items.length ? g.items.map(ev => {
-        const k = kindOf(ev.msg || '');
-        return '<div class="ev ' + k[0] + '"><span class="ek">' + k[1] + '</span><span class="em">' + esc(ev.msg) +
-          '</span><span class="et">' + (typeof ev.t === 'number' ? ev.t.toFixed(1) + 's' : '') + '</span></div>';
-      }).join('') : '<div class="ev info"><span class="em">—</span></div>') + '</div></div>';
-  }).join('') + '</div>';
-  requestAnimationFrame(() => drawLinks(body));
+  const groups = groupsOf(j.events || []);
+  body.innerHTML = '<div class="view-tools"><input class="sq" aria-label="Search timeline" placeholder="Search events or player…"><select aria-label="Event type"><option value="">All events</option><option value="score">Score changes</option><option value="foul">Fouls</option><option value="shot">Shots</option><option value="pot">Pots</option><option value="res">Results</option></select><select aria-label="Jump to turn"><option value="">Jump to turn</option>' + groups.map((g,i) => '<option value="'+i+'">'+esc(g.title)+' · '+(i+1)+'</option>').join('') + '</select><button class="secondary expand-all">Expand all</button><button class="secondary collapse-all">Collapse all</button><span class="status count" role="status"></span></div><div class="timeline"></div>';
+  const search = body.querySelector('input'), type = body.querySelector('[aria-label="Event type"]'), list = body.querySelector('.timeline');
+  const draw = () => {
+    let count = 0;
+    list.innerHTML = groups.map((g,i) => {
+      const items = g.items.filter(ev => (ev.msg || '').toLowerCase().includes(search.value.trim().toLowerCase()) && (!type.value || kindOf(ev.msg || '')[0] === type.value));
+      if(!items.length && (search.value || type.value)) return '';
+      count += items.length;
+      return '<details class="turn-group'+(g.result ? ' result-group' : '')+'" data-group="'+i+'" open><summary><span><b>'+esc(g.title)+'</b><span class="turn-meta">'+(g.player ? 'Turn '+i : g.result ? esc(j.scores || 'Match result') : esc(j.game || 'Match start'))+'</span></span><span class="status">'+items.length+' events</span></summary><div class="timeline-events">'+items.map(ev => {
+        const [kind,label] = kindOf(ev.msg || '');
+        return '<div class="timeline-event '+kind+'"><time>'+(typeof ev.t === 'number' ? ev.t.toFixed(1)+'s' : '—')+'</time><span class="event-badge">'+label+'</span><span class="event-message">'+esc(ev.msg || '')+'</span></div>';
+      }).join('')+'</div></details>';
+    }).join('') || '<div class="msg">No events match these filters.</div>';
+    body.querySelector('.count').textContent = count+' matching events';
+  };
+  search.oninput = type.onchange = draw;
+  body.querySelector('.expand-all').onclick = () => list.querySelectorAll('details').forEach(d => d.open = true);
+  body.querySelector('.collapse-all').onclick = () => list.querySelectorAll('details').forEach(d => d.open = false);
+  body.querySelector('[aria-label="Jump to turn"]').onchange = e => {
+    const target = list.querySelector('[data-group="'+e.target.value+'"]');
+    if(target) { target.open = true; body.scrollTo({top:target.offsetTop-body.querySelector('.view-tools').offsetHeight-16,behavior:'smooth'}); target.querySelector('summary').focus(); }
+  };
+  draw();
+}
+function downloadText(text,name,type='text/plain') {
+  const a = document.createElement('a'), url = URL.createObjectURL(new Blob([text],{type}));
+  a.href=url; a.download=name; a.click(); setTimeout(() => URL.revokeObjectURL(url),1000);
+}
+function renderRaw(body,j,tx) {
+  const raw = JSON.stringify(j,null,2);
+  body.innerHTML = '<div class="view-tools"><input class="sq" aria-label="Search JSON" placeholder="Find in JSON…"><label><input type="checkbox" class="wrap-json" checked> Wrap lines</label><button class="secondary copy-json">Copy JSON</button><button class="secondary download-json">Download JSON</button><span class="status count" role="status"></span></div><pre class="raw json-view"></pre>';
+  const pre = body.querySelector('pre'), search = body.querySelector('.sq'), count = body.querySelector('.count');
+  const draw = () => {
+    const q = search.value.toLowerCase(); let n=0;
+    if(!q) pre.textContent = raw;
+    else {
+      let start=0,parts=[]; const lower=raw.toLowerCase(); let i;
+      while((i=lower.indexOf(q,start)) !== -1) { parts.push(esc(raw.slice(start,i))+'<mark>'+esc(raw.slice(i,i+q.length))+'</mark>'); start=i+q.length; n++; }
+      parts.push(esc(raw.slice(start))); pre.innerHTML=parts.join('');
+    }
+    count.textContent = q ? n+' matches' : raw.split(String.fromCharCode(10)).length+' lines';
+  };
+  search.oninput=draw;
+  body.querySelector('.wrap-json').onchange=e => pre.classList.toggle('nowrap',!e.target.checked);
+  body.querySelector('.copy-json').onclick=async () => { try { await navigator.clipboard.writeText(raw); count.textContent='JSON copied'; } catch(e) { count.textContent='Clipboard unavailable. Use Download JSON.'; } };
+  body.querySelector('.download-json').onclick=() => downloadText(raw,tx+'.json','application/json');
+  draw();
 }
 
-// Curved connectors from each turn card to its event cards (redrawn on resize).
-function drawLinks(body) {
-  body.querySelectorAll('.frow').forEach(row => {
-    const svg = row.querySelector('svg.links'), node = row.querySelector('.node');
-    svg.style.height = '0px';
-    const evs = row.querySelector('.evs');
-    const h = Math.max(evs.offsetHeight, node.offsetHeight);
-    svg.style.height = h + 'px';
-    const rr = row.getBoundingClientRect(), sr = svg.getBoundingClientRect(), nr = node.getBoundingClientRect();
-    const w = sr.width;
-    svg.setAttribute('viewBox', '0 0 ' + w + ' ' + h);
-    const y0 = nr.top - rr.top + nr.height / 2;
-    const col = getComputedStyle(node).getPropertyValue('--c').trim() || '#888';
-    svg.innerHTML = [...row.querySelectorAll('.ev')].map(ev => {
-      const er = ev.getBoundingClientRect(), y1 = er.top - rr.top + er.height / 2;
-      return '<path d="M0 ' + y0 + ' C ' + (w * 0.55) + ' ' + y0 + ', ' + (w * 0.45) + ' ' + y1 + ', ' + w + ' ' + y1 +
-        '" fill="none" stroke="' + col + '" stroke-width="3" stroke-linecap="round" opacity=".85"/>';
-    }).join('');
-  });
-}
-window.addEventListener('resize', () => document.querySelectorAll('.vbody').forEach(b => b.querySelector('.flow') && drawLinks(b)));
 const FLAG_LABEL = {
   false_win_claim: 'False win claim', unbacked_win_claim: 'Unbacked win claim', out_of_turn: 'Out of turn',
   roll_twice: 'Repeated roll', tampered_request: 'Invalid request', one_sided_pair: 'Repeated one-sided results', fast_win_claim: 'Unusually fast win claim',

@@ -63,3 +63,13 @@ The implemented scope is deployed. The tests above distinguish live verification
 - Defined navy text, indigo actions, teal activity and amber review tokens, including dark-mode equivalents.
 - Refined header hierarchy, underline navigation, tinted KPI surfaces, table spacing, chart guides and hover/focus/disabled states.
 - Browser verification confirmed 48px right padding, 16px arrow inset and no horizontal overflow at 390px.
+
+## Inspector refinement — 2026-10-09
+- Shared inspector header and a single flexible vertical reading area for Flow, Raw JSON and Server logs; removed fixed inner scroll heights.
+- Replaced saturated connector graph with neutral timeline groups, subtle type badges, event search/filtering, jump-to-turn and expand/collapse controls.
+- Raw JSON: default line wrapping, occurrence highlighting, match count, copy and download. JSON remains complete when searching.
+- Server logs: sticky search/severity tools, full-height wrapped lines, visible counts, truncation and retry messages. Stale request errors cannot overwrite another mode.
+- Live 198-event Snooker match: 19 groups, one vertical scroller (`vbody`); collapse-all verified.
+- Live 1,016-line JSON: search for Rahul produced 122 highlights. At 390px, reading area scroll width equals client width (388px).
+- Fixture server logs: error filter returns 1 of 3 loaded lines. Live upstream log-source limitation remains documented above.
+- Screenshots: `viewer-timeline.jpg`, `viewer-json.jpg`, `viewer-mobile.jpg`, `viewer-server-fixture.jpg` in `docs/screenshots`.
