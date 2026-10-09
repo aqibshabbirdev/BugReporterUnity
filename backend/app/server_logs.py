@@ -85,7 +85,15 @@ def _get(c, path, query, first_bytes=None):
         "x-amz-content-sha256": payload, "x-amz-date": amz_date,
         "Authorization": f"AWS4-HMAC-SHA256 Credential={c['key']}/{scope}, SignedHeaders={signed}, Signature={sig}"})
     with urllib.request.urlopen(req, timeout=25) as r:
-        return r.read(MAX_FILE_BYTES + 1)
+        # read(n) may return less than n before the end (one socket read), so loop until EOF or the cap
+        chunks, size = [], 0
+        while size <= MAX_FILE_BYTES:
+            part = r.read(min(1024 * 1024, MAX_FILE_BYTES + 1 - size))
+            if not part:
+                break
+            chunks.append(part)
+            size += len(part)
+        return b"".join(chunks)
 
 
 def _list(c, prefix, delimiter=None, limit=2000):
