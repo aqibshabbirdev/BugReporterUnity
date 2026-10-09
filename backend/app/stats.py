@@ -749,15 +749,16 @@ async function showLog(btn) {
     open.remove();
     if (open.dataset.mode === want) return;   // same button again closes; the other button switches view
   }
+  // Put the viewer in place before loading, so a second click while loading closes it instead of opening a copy.
+  const v = document.createElement('div'); v.className = 'viewer'; v.dataset.mode = want;
+  v.innerHTML = '<span class="games">Loading…</span>'; box.append(v);
   const r = await fetch('/api/stats/match-log/' + encodeURIComponent(btn.dataset.tx), {credentials: 'same-origin'});
-  const v = document.createElement('div'); v.className = 'viewer';
-  if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; box.append(v); return; }
+  if (!r.ok) { v.textContent = 'Could not load (' + r.status + ')'; return; }
   const j = await r.json();
   v.innerHTML = '<div class="vbar"><div class="seg"><button class="on" data-mode="flow">Flow</button><button data-mode="raw">Raw JSON</button><button data-mode="srv">Server logs</button></div>' +
     '<span class="games">' + esc([j.game, j.reason, j.scores].filter(Boolean).join(' · ')) + '</span>' +
     (j.players && j.players.length ? '<span class="games">Players: ' + j.players.map(p => esc(p.name) + ' <span class="uid">ID ' + esc(p.id) + '</span>' + (p.role ? ' (' + esc(p.role) + ')' : '')).join(' · ') + '</span>' : '') +
     '</div><div class="vbody"></div>';
-  box.append(v);
   const body = v.querySelector('.vbody');
   const show = mode => {
     v.dataset.mode = mode;
