@@ -262,6 +262,78 @@
     S.flowSel = null; T.markDirty(); T.renderTree(); T.renderEditor(); T.saveColl();
   }
 
+  /* ── folders in the Flows list ─────────────────────────────────────────── */
+
+  // A flow's folder is the start of its name: "Auth · Login — …" is the flow "Login — …" in the folder "Auth".
+  // Kept in the name (not a nested folder) so the runner, reports, marks and the graph see flows exactly as before.
+  const SEP = ' · ';
+  T.flowFolder = (name) => { const i = String(name || '').indexOf(SEP); return i > 0 ? name.slice(0, i).trim() : ''; };
+  T.flowShortName = (name) => { const i = String(name || '').indexOf(SEP); return i > 0 ? name.slice(i + SEP.length) : name; };
+  const closedGroups = () => { try { return new Set(JSON.parse(T.ls.get('flowGroupsClosed', '[]'))); } catch (e) { return new Set(); } };
+
+  let sideTools = null;
+  function sideToolsBox() {
+    if (sideTools) return sideTools;
+    const search = h('input', { type: 'search', placeholder: 'Find a flow — folder, game, word', 'aria-label': 'Find a flow', oninput: () => { S.flowQuery = search.value.trim().toLowerCase(); T.renderTree(); } });
+    const chips = h('div.flow-chips', { role: 'group', 'aria-label': 'Show flows by result' });
+    const runAll = h('button.primary', { text: '▶ Run all', title: 'Run every flow in this list, one after another, and get one report', onclick: () => T.runFlowsDialog(T.flowsShown()) });
+    sideTools = { box: h('div.flow-tools', {}, search, h('div.inline', {}, chips, h('span.grow'), runAll)), chips, runAll };
+    return sideTools;
+  }
+
+  T.renderFlowsSide = function (el) {
+    const all = T.flowList();
+    const cur = selectedFlow();
+    if (!all.length) {
+      el.replaceChildren(h('div.empty-tree', {}, h('p', { text: 'No flows yet.' }), h('p.hint', { text: 'A flow runs a set of APIs in order — log in, play, settle, check the balance.' })));
+      return;
+    }
+    const tools = sideToolsBox();
+    const counts = { all: all.length, fail: 0, pass: 0, new: 0 };
+    all.forEach((f) => { const k = F.flowState(f).kind; if (k === 'fail') counts.fail++; else if (k === 'pass') counts.pass++; else counts.new++; });
+    tools.chips.replaceChildren(...[['all', 'All'], ['fail', '✕ Failing'], ['pass', '✓ Passed'], ['new', '◌ Not run']].map(([k, label]) => h('button.chip', {
+      class: S.flowKind === k ? 'on' : '', 'aria-pressed': String(S.flowKind === k), text: `${label} ${counts[k]}`,
+      onclick: () => { S.flowKind = k; T.ls.set('flowKind', k); T.renderTree(); }
+    })));
+    const list = T.flowsShown();
+    tools.runAll.disabled = !list.length;
+    tools.runAll.textContent = list.length && list.length < all.length ? `▶ Run ${list.length}` : '▶ Run all';
+    if (!list.length) { el.replaceChildren(tools.box, h('p.hint.flow-none', { text: 'No flow matches — clear the search or pick another filter.' })); return; }
+
+    const groups = new Map();
+    list.forEach((f) => { const g = T.flowFolder(f.name); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(f); });
+    const closed = closedGroups();
+    const searching = !!S.flowQuery;
+    const row = (f, inFolder) => {
+      const st = F.flowState(f);
+      return h('div.row.flow-row', {
+        class: (cur === f ? 'sel' : '') + (inFolder ? ' in-folder' : ''), role: 'button', tabindex: 0, title: `${f.name}\n${F.KIND_LABEL[st.kind]}`,
+        onclick: () => { S.flowSel = f.id; T.renderTree(); T.renderEditor(); },
+        onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); S.flowSel = f.id; T.renderTree(); T.renderEditor(); } }
+      },
+        h('span.flow-dot', { class: 'k-' + st.kind, 'aria-label': F.KIND_LABEL[st.kind] }),
+        h('span.label', { text: inFolder ? T.flowShortName(f.name) : f.name }),
+        h('span.count', { text: String(st.steps.length) }));
+    };
+    const blocks = [];
+    [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b))).forEach((g) => {
+      const flows = groups.get(g);
+      if (!g) { if (groups.size > 1) blocks.push(h('div.flow-group-head.plain', {}, h('span.label', { text: 'Not in a folder' }))); flows.forEach((f) => blocks.push(row(f, false))); return; }
+      const open = searching || !closed.has(g) || flows.includes(cur);
+      const failing = flows.filter((f) => F.flowState(f).kind === 'fail').length;
+      const toggle = () => { const c = closedGroups(); if (c.has(g)) c.delete(g); else c.add(g); T.ls.set('flowGroupsClosed', JSON.stringify([...c])); T.renderTree(); };
+      blocks.push(h('div.flow-group-head', { role: 'button', tabindex: 0, 'aria-expanded': String(open), onclick: toggle, onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } } },
+        h('span.flow-caret', { text: open ? '▾' : '▸' }),
+        h('span.flow-folder-ico', { text: '📁' }),
+        h('span.label', { text: g }),
+        failing ? h('span.flow-group-fail', { text: `✕ ${failing}`, title: `${failing} failing` }) : '',
+        h('span.count', { text: String(flows.length) }),
+        h('button.ghost.qa-mini', { text: '▶', title: `Run the ${flows.length} flows in ${g}`, 'aria-label': `Run folder ${g}`, onclick: (ev) => { ev.stopPropagation(); T.runFlowsDialog(flows); } })));
+      if (open) flows.forEach((f) => blocks.push(row(f, true)));
+    });
+    el.replaceChildren(tools.box, ...blocks);
+  };
+
   /* ── the editor ────────────────────────────────────────────────────────── */
 
   T.flowBuilderClassic = T.flowBuilder;
@@ -270,7 +342,8 @@
     if (!S.coll) return T.toast('Open a collection first', 'error');
     if (folder && !T.isFlowFolder(folder)) folder = null;
     const editingId = folder ? folder.id : null;
-    let name = folder ? folder.name : '';
+    let name = folder ? T.flowShortName(folder.name) : '';
+    let group = folder ? T.flowFolder(folder.name) : (T.ls.get('flowLastFolder', '') || '');
     let desc = folder ? (typeof folder.description === 'string' ? folder.description : (folder.description && folder.description.content) || '') : '';
     let steps = folder ? folder.item.filter((x) => !M.isFolder(x)).map((x) => F.stepOf(M.clone(x))) : [];
     let dirty = false, busy = false, picker = null;   // picker: {at} while choosing an API to add
@@ -295,6 +368,9 @@
     })() : [];
 
     const nameIn = h('input', { id: 'qa-name', value: name, placeholder: 'e.g. Ludo multiplayer — Player 1 wins', oninput: () => { name = nameIn.value; touch(); } });
+    const folders = [...new Set(T.flowList().map((f) => T.flowFolder(f.name)).filter(Boolean))].sort();
+    const folderIn = h('input', { id: 'qa-folder', value: group, list: 'qa-folders', placeholder: 'e.g. Auth, Multiplayer, AI games — empty for none', oninput: () => { group = folderIn.value.replace(/·/g, '').trim(); touch(); } });
+    const folderList = h('datalist', { id: 'qa-folders' }, folders.map((g) => h('option', { value: g })));
     const descIn = h('input', { id: 'qa-desc', value: desc, placeholder: 'What this flow proves (optional)', oninput: () => { desc = descIn.value; touch(); } });
     const list = h('div.qa-edit-list');
     const top = h('div.qa-start');
@@ -356,7 +432,7 @@
       sel.onchange = () => {
         const f = flows.find((x) => x.id === sel.value); if (!f) return;
         steps = f.item.filter((x) => !M.isFolder(x)).map((x) => { const c = F.stepOf(M.clone(x)); c.it.id = M.uid(); return c; });
-        if (!name.trim()) { name = f.name + ' copy'; nameIn.value = name; }
+        if (!name.trim()) { name = T.flowShortName(f.name) + ' copy'; nameIn.value = name; if (!group) { group = T.flowFolder(f.name); folderIn.value = group; } }
         touch(); draw();
       };
       return [h('b', { text: 'Start from' }),
@@ -672,7 +748,9 @@
       if (!root) { root = { id: M.uid(), name: '🧪 Flows', auth: { type: 'noauth' }, item: [] }; S.coll.data.item.unshift(root); }
       let target = editingId ? M.findById(S.coll.data.item, editingId) : null;
       if (!target) { target = { id: M.uid(), name: '', auth: { type: 'noauth' }, item: [] }; root.item.push(target); }
-      target.name = name.trim();
+      const shortName = T.flowShortName(name.trim());   // a pasted "Folder · Name" keeps one folder
+      target.name = group ? `${group} · ${shortName}` : shortName;
+      T.ls.set('flowLastFolder', group);
       if (desc.trim()) target.description = desc.trim(); else delete target.description;
       target.auth = target.auth || { type: 'noauth' };
       target.item = steps.map((st) => { const it = F.finalItem(st); it.name = String(it.name || '').trim() || 'Step'; return it; });
@@ -693,7 +771,7 @@
     const box = h('div.modal.qa-editor', { role: 'dialog', 'aria-label': 'Flow editor' },
       h('header', {}, h('span.grow', { text: folder ? `Edit flow — ${folder.name}` : 'New flow' }), h('button.ghost', { text: '×', title: 'Close', onclick: () => close() })),
       h('div.qa-edit-body', {},
-        h('div.qa-meta', {}, h('label', { for: 'qa-name', text: 'Flow name' }), nameIn, h('label', { for: 'qa-desc', text: 'What it proves' }), descIn),
+        h('div.qa-meta', {}, h('label', { for: 'qa-folder', text: 'Folder' }), h('div', {}, folderIn, folderList), h('label', { for: 'qa-name', text: 'Flow name' }), nameIn, h('label', { for: 'qa-desc', text: 'What it proves' }), descIn),
         top, list),
       h('footer', {},
         h('span.hint.grow', {}, 'Steps run top to bottom and stop at the first one that does not pass. ', h('a', { href: '/apitestingbruno/guide#8-edit-a-step--the-six-questions', target: '_blank', rel: 'noopener', text: '📖 Guide' })),
