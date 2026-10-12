@@ -61,6 +61,8 @@
       else out.push(['who', `Connects to ${c.url || '(no URL)'}${c.token ? ' with ' + c.token : ''}` +
         (c.emit && c.emit.event ? `, sends "${c.emit.event}"` : '') + `, waits for "${(c.wait && c.wait.event) || 'any event'}" (up to ${(c.wait && c.wait.timeout) || 20} s).`]);
     }
+    const sends = sentWords(it);
+    if (sends) out.push(['send', 'Sends ' + sends]);
     const scripted = scriptChecks(it);
     const passWords = st.rules.map(ruleWords).concat(scripted);
     out.push(['pass', 'Passes when ' + (passWords.length ? passWords.join(' · ') : 'the response looks OK (default)') + '.']);
@@ -94,6 +96,23 @@
     }
     return out.map((t) => `"${t}"`);
   }
+  /** What a request sends, in one line: the JSON body's or form's fields as name = value. */
+  function sentWords(it) {
+    if (T.isWaitStep(it) || T.isSocketStep(it)) return '';
+    const b = M.req(it).body;
+    if (!b || !b.mode) return '';
+    let pairs = [];
+    if (b.mode === 'raw') {
+      const raw = String(b.raw || '').trim();
+      if (!raw) return '';
+      try { const j = JSON.parse(raw.replace(/\{\{[^}]+\}\}/g, (m) => JSON.stringify(m).slice(1, -1))); if (j && typeof j === 'object' && !Array.isArray(j)) pairs = Object.entries(j).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]); }
+      catch (e) { return raw.replace(/\s+/g, ' ').slice(0, 140) + (raw.length > 140 ? '…' : ''); }
+    } else if (Array.isArray(b[b.mode])) pairs = b[b.mode].filter((x) => !x.disabled).map((x) => [x.key, x.type === 'file' ? '(file)' : String(x.value == null ? '' : x.value)]);
+    if (!pairs.length) return '';
+    const text = pairs.map(([k, v]) => `${k} = ${v === '' ? '""' : v}`).join(' · ');
+    return (text.length > 180 ? text.slice(0, 180) + '…' : text) + (b.mode === 'raw' ? '' : ' (form)');
+  }
+
   const SECRET = /pass|token|secret|key|signature/i;
   /** The value a {{name}} has right now (after a run in this page), shortened; secrets masked. */
   function currentValue(v) {
@@ -120,7 +139,7 @@
     for (let j = me - 1; j >= 0; j--) if (savesOf(rows[j].it).includes(v)) return j + 1;
     return 0;
   }
-  const LINE_ICON = { wait: '⏱', who: '⚡', pass: '✓', need: '↳', keep: '⤓', ask: '✎', retry: '↻', branch: '⑂' };
+  const LINE_ICON = { wait: '⏱', who: '⚡', send: '➚', pass: '✓', need: '↳', keep: '⤓', ask: '✎', retry: '↻', branch: '⑂' };
 
   /* ── the flow page ─────────────────────────────────────────────────────── */
 
@@ -492,7 +511,7 @@
         const insert = kept.size ? h('select.qa-swap', { 'aria-label': 'Insert a saved value', onchange: (ev) => {
           const name = ev.target.value; ev.target.value = '';
           if (!name) return;
-          const el = lastField || bodyEl || urlEl;
+          const el = lastField || bodyEl || urlEl;   // a form field counts too once clicked
           const [a, b] = lastField && lastPos ? lastPos : [el.value.length, el.value.length];
           el.value = el.value.slice(0, a) + `{{${name}}}` + el.value.slice(b);
           el.dispatchEvent(new Event('input'));
@@ -500,14 +519,40 @@
         } }, h('option', { value: '', text: '+ Insert a saved value…' }), [...kept.keys()].map((n) => h('option', { value: n, text: `{{${n}}} — saved by step ${kept.get(n)}` }))) : '';
         const urlEl = h('input.mono', { value: M.urlRaw(req), 'aria-label': 'URL', onblur: (ev) => remember(ev.target), onclick: (ev) => remember(ev.target), onkeyup: (ev) => remember(ev.target), oninput: (ev) => { if (typeof req.url === 'string' || !req.url) req.url = { raw: ev.target.value }; else { req.url.raw = ev.target.value; delete req.url.host; delete req.url.path; delete req.url.query; } touch(); } });
         const bodyEl = bodyRaw ? h('textarea.mono', { rows: Math.min(10, Math.max(3, String(req.body.raw || '').split('\n').length)), value: req.body.raw || '', 'aria-label': 'Body', onblur: (ev) => remember(ev.target), onclick: (ev) => remember(ev.target), onkeyup: (ev) => remember(ev.target), oninput: (ev) => { req.body.raw = ev.target.value; touch(); } }) : null;
+        // The body in any shape the API uses: JSON text, or form fields (name = value rows, sent as a form), or none.
+        const bmode = !req.body || !req.body.mode ? 'none' : req.body.mode === 'raw' ? 'raw' : ['urlencoded', 'formdata'].includes(req.body.mode) ? req.body.mode : 'other';
+        const bodyKind = h('select', { 'aria-label': 'Body type', onchange: (ev) => {
+          const v = ev.target.value;
+          const rows = bmode === 'urlencoded' || bmode === 'formdata' ? (req.body[bmode] || []) : [];
+          if (v === 'none') delete req.body;
+          else if (v === 'raw') req.body = { mode: 'raw', raw: rows.length ? JSON.stringify(Object.fromEntries(rows.filter((x) => !x.disabled).map((x) => [x.key, x.value])), null, 2) : '{\n  \n}', options: { raw: { language: 'json' } } };
+          else req.body = { mode: v, [v]: bmode === 'raw' ? (() => { try { return Object.entries(JSON.parse(req.body.raw || '{}')).map(([key, value]) => ({ key, value: String(value), type: 'text' })); } catch (e) { return []; } })() : rows };
+          redraw();
+        } }, [['none', 'No body'], ['raw', 'JSON'], ['urlencoded', 'Form fields'], ['formdata', 'Form fields + files']].map(([v, l]) => h('option', { value: v, text: l, selected: bmode === v })),
+          bmode === 'other' ? h('option', { value: 'other', text: req.body.mode, selected: true, disabled: true }) : '');
+        let formEl = null;
+        if (bmode === 'urlencoded' || bmode === 'formdata') {
+          const list = req.body[bmode] = req.body[bmode] || [];
+          formEl = h('div.qa-form-fields', {},
+            list.map((f, i) => f.type === 'file'
+              ? h('div.qa-row', {}, h('input.mono', { value: f.key, 'aria-label': 'Field name', oninput: (ev) => { f.key = ev.target.value; touch(); } }), h('span.hint', { text: '(a file — choose it in the APIs tab)' }), h('button.ghost', { text: '✕', 'aria-label': 'Remove field', onclick: () => { list.splice(i, 1); redraw(); } }))
+              : h('div.qa-row', {},
+                h('input.mono.qa-fkey', { value: f.key, placeholder: 'name', 'aria-label': 'Field name', oninput: (ev) => { f.key = ev.target.value; touch(); } }),
+                h('span', { text: '=' }),
+                h('input.mono', { value: f.value == null ? '' : f.value, placeholder: 'value or {{name}}', 'aria-label': `Value of ${f.key}`, onblur: (ev) => remember(ev.target), onclick: (ev) => remember(ev.target), onkeyup: (ev) => remember(ev.target), oninput: (ev) => { f.value = ev.target.value; touch(); } }),
+                h('label.qa-mini-check', { title: 'Untick to leave this field out' }, h('input', { type: 'checkbox', checked: !f.disabled, onchange: (ev) => { if (ev.target.checked) delete f.disabled; else f.disabled = true; touch(); } }), 'send'),
+                h('button.ghost', { text: '✕', 'aria-label': 'Remove field', onclick: () => { list.splice(i, 1); redraw(); } }))),
+            h('div.inline', {}, h('button.ghost', { text: '+ Add a field', onclick: () => { list.push({ key: '', value: '', type: 'text' }); redraw(); } })));
+        }
         requestPart = section('1', 'What is sent', 'Who sends it decides which login token goes with it.',
           h('div.qa-grid', {},
             h('label', { text: 'Who sends it' }), who,
             h('label', { text: 'Call' }), h('div.inline.qa-call', {},
               h('select', { 'aria-label': 'Method', onchange: (ev) => { req.method = ev.target.value; redraw(); } }, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => h('option', { text: m, selected: (req.method || 'GET').toUpperCase() === m }))),
               urlEl),
-            bodyRaw ? h('label', { text: 'Body' }) : '',
-            bodyEl || '',
+            h('label', { text: 'Body' }), bodyKind,
+            bodyEl ? h('span') : '', bodyEl || '',
+            formEl ? h('span') : '', formEl || '',
             insert ? h('span') : '', insert ? h('div.inline', {}, insert, h('span.hint', { text: 'Click in the URL or body first, then pick — it goes where the cursor is.' })) : ''));
       }
 
