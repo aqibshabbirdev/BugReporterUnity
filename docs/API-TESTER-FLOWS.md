@@ -248,22 +248,42 @@ Good to know:
 
 ## 10. Socket steps
 
-For APIs that answer on a socket (match server events, socket joining):
+Some answers come on a socket, not in the HTTP response. Example: when Player 1 accepts Player 2
+(`POST /session/notify-to-play/user`), the server pushes **`childActivated`** on the main socket. The socket needs
+the player's login **JWT** — the same token the login step saves (`{{p1_token}}`, `{{p2_token}}`). The tester sends
+it in the handshake (`auth.token`), like the app.
 
-| Field | Example |
+The server does not repeat an event to a socket that connects later, so the socket must be **open before** the HTTP
+step that causes the event. That is what the two socket steps are for. Add them with **⚡ + Socket**:
+
+| Step | What it does |
 |---|---|
-| Socket URL | `{{socket_url}}/emit` |
-| Connect as | Player 1 (sends `{{p1_token}}` as the login token) |
-| Query | `type=mobile-client` |
-| Send event | the event name to send (leave empty to only listen) |
-| With data | `{"transaction_id": "{{flow_tx}}"}` |
-| Wait for event | the event to wait for (empty = the first one that arrives) |
-| Give up after | `30` seconds |
+| 👂 **Start listening on a player's socket** | Connects now with that player's JWT and **stays open** for the rest of the flow, keeping every event that arrives |
+| ⏳ **Wait for an event on an open socket** | Takes the next matching event from that socket — also one that arrived while the steps in between ran |
+| ⚡ **Connect, send, wait (one step)** | Connects, sends one event, waits for the answer and disconnects (only for an event this step itself causes) |
 
-The answer is checked like a response: `{"event": "…", "payload": {…}}`. So a condition is written like
-`payload.status` is equal to `ready`, and you can save `payload.address`.
+**Example — accept arrives on Player 2's socket:**
 
-A socket step connects, waits for one answer and disconnects. It cannot keep listening while other steps run.
+| # | Step | Settings |
+|---|---|---|
+| 1–2 | Login player 1 / 2 | save `{{p1_token}}`, `{{p2_token}}` |
+| 3 | Create challenge, 4 Join | as usual |
+| 5 | 👂 Player 2 starts listening | Socket: *Player 2's socket* · URL `{{socket_url}}` (main socket, `https://socket.gpstagings.com`) · Connect as *Player 2 (JWT {{p2_token}})* · Query empty |
+| 6 | Match 1: P1 accepts P2 | the normal HTTP step |
+| 7 | ⏳ Player 2 gets the event | Socket: *Player 2's socket* · Wait for event `childActivated` · Give up after `30` s |
+
+Step 7's answer looks like `{"event": "childActivated", "payload": [{"transaction_id": "…", "player_info_id": …}]}`, so
+its conditions and saved values use paths such as `payload.0.transaction_id` is equal to `{{flow_tx}}`.
+
+Good to know:
+
+- Each player has one socket in a flow (*Player 1's socket*, *Player 2's socket*). A second *Start listening* on the
+  same one replaces it.
+- Every *Wait* takes the next event after the previous wait on that socket; one event is never read twice.
+- With **Wait for event** empty, the step takes whatever arrives next.
+- The match-server socket is `{{socket_url}}/emit` with Query `type=mobile-client`.
+- A wrong or expired JWT shows **Socket connect failed: unauthorized** — run the login step first.
+- An open socket closes when the page closes, or after 15 minutes without events.
 
 ---
 

@@ -55,7 +55,10 @@
     const out = [];
     if (T.isSocketStep(it)) {
       const c = it.socket || {};
-      out.push(['who', `Connects to ${c.url || '(no URL)'}${c.token ? ' with ' + c.token : ''}` +
+      const who = c.channel === 'p2' ? "Player 2's socket" : "Player 1's socket";
+      if (c.mode === 'listen') out.push(['who', `Opens ${who} (${c.url || 'no URL'}${c.token ? ', JWT ' + c.token : ''}) and keeps it open` + (c.emit && c.emit.event ? `, sends "${c.emit.event}"` : '') + '.']);
+      else if (c.mode === 'wait') out.push(['who', `Waits on ${who} for "${(c.wait && c.wait.event) || 'the next event'}" (up to ${(c.wait && c.wait.timeout) || 20} s) — also one that arrived during the steps before.`]);
+      else out.push(['who', `Connects to ${c.url || '(no URL)'}${c.token ? ' with ' + c.token : ''}` +
         (c.emit && c.emit.event ? `, sends "${c.emit.event}"` : '') + `, waits for "${(c.wait && c.wait.event) || 'any event'}" (up to ${(c.wait && c.wait.timeout) || 20} s).`]);
     }
     const scripted = scriptChecks(it);
@@ -366,7 +369,15 @@
       return h('div.qa-add', {},
         h('button.primary', { text: '+ Add an API call', onclick: () => { picker = { at: steps.length }; draw(); } }),
         h('button', { text: '⏱ + Wait', title: 'Pause — e.g. a payout that arrives a few seconds later', onclick: () => { steps.push(F.stepOf(T.waitStep(10))); touch(); draw(); } }),
-        h('button', { text: '⚡ + Socket message', title: 'Connect to a socket, send an event, wait for the answer', onclick: () => { const st = F.stepOf(T.socketStep({ url: '{{socket_url}}', query: [['type', 'mobile-client']], token: '{{p1_token}}', wait: { event: '', timeout: 30 }, name: '⚡ Socket message' })); st.open = true; steps.push(st); touch(); draw(); } }));
+        h('button', { text: '⚡ + Socket', title: 'Listen on a player\'s socket, or wait for an event on it', onclick: (ev) => T.menu(ev.currentTarget, [
+          { label: '👂 Start listening on a player\'s socket', run: () => addSocket({ mode: 'listen', channel: 'p2', url: '{{socket_url}}', token: '{{p2_token}}', name: '👂 Player 2 starts listening on the socket' }) },
+          { label: '⏳ Wait for an event on an open socket', run: () => addSocket({ mode: 'wait', channel: 'p2', wait: { event: '', timeout: 30 }, name: '⏳ Player 2 gets the socket event' }) },
+          { label: '⚡ Connect, send, wait (one step)', run: () => addSocket({ url: '{{socket_url}}', query: [['type', 'mobile-client']], token: '{{p1_token}}', wait: { event: '', timeout: 30 }, name: '⚡ Socket message' }) }]) }));
+    }
+
+    function addSocket(cfg) {
+      const st = F.stepOf(T.socketStep(Object.assign({ query: [], wait: { event: '', timeout: 30 } }, cfg)));
+      st.open = true; steps.push(st); touch(); draw();
     }
 
     function apiPicker() {
@@ -439,17 +450,36 @@
       if (T.isSocketStep(it)) {
         const c = it.socket;
         c.emit = c.emit || { event: '', data: '' }; c.wait = c.wait || { event: '', timeout: 20 }; c.query = c.query || [];
+        const mode = c.mode || 'once';
+        const setMode = (m) => {
+          if (m === 'once') { delete c.mode; delete c.channel; } else { c.mode = m; c.channel = c.channel || (c.token === '{{p2_token}}' ? 'p2' : 'p1'); }
+          if (m === 'listen' && !c.url) c.url = '{{socket_url}}';
+          redraw();
+        };
+        const modeSel = h('select', { 'aria-label': 'What this socket step does', onchange: (ev) => setMode(ev.target.value) },
+          [['listen', 'Start listening — connect and stay open for later steps'], ['wait', 'Wait for an event on an open socket'], ['once', 'Connect, send, wait for the answer (all in this step)']]
+            .map(([v, l]) => h('option', { value: v, text: l, selected: mode === v })));
+        const chanSel = h('select', { 'aria-label': 'Which socket', onchange: (ev) => { c.channel = ev.target.value; if (mode === 'listen') c.token = ev.target.value === 'p2' ? '{{p2_token}}' : '{{p1_token}}'; redraw(); } },
+          [['p1', "Player 1's socket"], ['p2', "Player 2's socket"]].map(([v, l]) => h('option', { value: v, text: l, selected: (c.channel || 'p1') === v })));
         const tokenSel = h('select', { 'aria-label': 'Connect as', onchange: () => { c.token = tokenSel.value === 'custom' ? c.token : tokenSel.value; redraw(); } },
-          [['{{p1_token}}', 'Player 1'], ['{{p2_token}}', 'Player 2'], ['', 'No login'], ['custom', 'Other token…']].map(([v, l]) => h('option', { value: v, text: l, selected: v === 'custom' ? !['{{p1_token}}', '{{p2_token}}', ''].includes(c.token || '') : (c.token || '') === v })));
-        requestPart = section('1', 'Socket message', 'Connects, sends one event (optional) and waits for the answer. The answer is checked like a response: {"event": …, "payload": …}.',
+          [['{{p1_token}}', 'Player 1 (JWT {{p1_token}})'], ['{{p2_token}}', 'Player 2 (JWT {{p2_token}})'], ['', 'No login'], ['custom', 'Other token…']].map(([v, l]) => h('option', { value: v, text: l, selected: v === 'custom' ? !['{{p1_token}}', '{{p2_token}}', ''].includes(c.token || '') : (c.token || '') === v })));
+        const connectRows = [
+          h('label', { text: 'Socket URL' }), h('input.mono', { value: c.url || '', placeholder: '{{socket_url}}  (main socket) or {{socket_url}}/emit', oninput: (ev) => { c.url = ev.target.value; it.request.url = { raw: c.url }; touch(); } }),
+          h('label', { text: 'Connect as' }), h('div.inline', {}, tokenSel, !['{{p1_token}}', '{{p2_token}}', ''].includes(c.token || '') ? h('input.mono', { value: c.token || '', placeholder: '{{token}}', oninput: (ev) => { c.token = ev.target.value; touch(); } }) : '', h('span.hint', { text: 'The login JWT goes in the handshake (auth.token), like the app.' })),
+          h('label', { text: 'Query' }), h('input.mono', { value: (c.query || []).map(([k, v]) => `${k}=${v}`).join('&'), placeholder: 'e.g. type=mobile-client (empty for the main socket)', oninput: (ev) => { c.query = ev.target.value.split('&').filter(Boolean).map((q) => { const i = q.indexOf('='); return i < 0 ? [q, ''] : [q.slice(0, i), q.slice(i + 1)]; }); touch(); } }),
+          h('label', { text: 'Send event' }), h('input.mono', { value: c.emit.event || '', placeholder: 'optional — sent right after connecting', oninput: (ev) => { c.emit.event = ev.target.value; touch(); } }),
+          h('label', { text: 'With data' }), h('textarea.mono', { rows: 2, value: c.emit.data || '', placeholder: '{"transaction_id": "{{flow_tx}}"}', oninput: (ev) => { c.emit.data = ev.target.value; touch(); } })];
+        const waitRows = [
+          h('label', { text: 'Wait for event' }), h('input.mono', { value: c.wait.event || '', placeholder: 'e.g. childActivated (empty = the next event)', oninput: (ev) => { c.wait.event = ev.target.value; touch(); } }),
+          h('label', { text: 'Give up after' }), h('div.inline', {}, h('input', { type: 'number', min: 1, max: 300, value: c.wait.timeout || 20, style: 'width:80px', oninput: (ev) => { c.wait.timeout = Number(ev.target.value) || 20; touch(); } }), ' seconds')];
+        const hint = mode === 'listen' ? 'Opens the socket now and keeps it open. Events that arrive while later steps run (e.g. after "P1 accepts P2") are kept until a "Wait for an event" step on the same socket reads them.'
+          : mode === 'wait' ? 'Reads the next matching event from a socket an earlier "Start listening" step opened — also one that arrived while the steps in between ran. The answer is checked like a response: {"event": …, "payload": …}.'
+          : 'Connects, sends one event (optional), waits for the answer and disconnects. An event sent before this step connects is missed — use Start listening for that.';
+        requestPart = section('1', 'Socket', hint,
           h('div.qa-grid', {},
-            h('label', { text: 'Socket URL' }), h('input.mono', { value: c.url || '', placeholder: '{{socket_url}}/emit', oninput: (ev) => { c.url = ev.target.value; it.request.url = { raw: c.url }; touch(); } }),
-            h('label', { text: 'Connect as' }), h('div.inline', {}, tokenSel, !['{{p1_token}}', '{{p2_token}}', ''].includes(c.token || '') ? h('input.mono', { value: c.token || '', placeholder: '{{token}}', oninput: (ev) => { c.token = ev.target.value; touch(); } }) : ''),
-            h('label', { text: 'Query' }), h('input.mono', { value: (c.query || []).map(([k, v]) => `${k}=${v}`).join('&'), placeholder: 'type=mobile-client', oninput: (ev) => { c.query = ev.target.value.split('&').filter(Boolean).map((p) => { const i = p.indexOf('='); return i < 0 ? [p, ''] : [p.slice(0, i), p.slice(i + 1)]; }); touch(); } }),
-            h('label', { text: 'Send event' }), h('input.mono', { value: c.emit.event || '', placeholder: 'leave empty to only listen', oninput: (ev) => { c.emit.event = ev.target.value; touch(); } }),
-            h('label', { text: 'With data' }), h('textarea.mono', { rows: 3, value: c.emit.data || '', placeholder: '{"transaction_id": "{{flow_tx}}"}', oninput: (ev) => { c.emit.data = ev.target.value; touch(); } }),
-            h('label', { text: 'Wait for event' }), h('input.mono', { value: c.wait.event || '', placeholder: 'empty = the first event that arrives', oninput: (ev) => { c.wait.event = ev.target.value; touch(); } }),
-            h('label', { text: 'Give up after' }), h('div.inline', {}, h('input', { type: 'number', min: 1, max: 300, value: c.wait.timeout || 20, style: 'width:80px', oninput: (ev) => { c.wait.timeout = Number(ev.target.value) || 20; touch(); } }), ' seconds')));
+            h('label', { text: 'This step' }), modeSel,
+            mode !== 'once' ? h('label', { text: 'Socket' }) : '', mode !== 'once' ? chanSel : '',
+            ...(mode === 'wait' ? waitRows : mode === 'listen' ? connectRows : connectRows.concat(waitRows))));
       } else {
         const req = M.req(it);
         const who = h('select', { 'aria-label': 'Who sends it', onchange: () => { st.runAs = who.value; redraw(); } },

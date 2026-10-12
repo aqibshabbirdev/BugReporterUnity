@@ -51,7 +51,9 @@
   T.isSocketStep = (it) => !!(it && it.socket && typeof it.socket === 'object');
   T.socketStep = (cfg) => {
     const c = Object.assign({ url: '', query: [], token: '', emit: { event: '', data: '' }, wait: { event: '', timeout: 20 } }, cfg || {});
-    return { id: M.uid(), name: c.name || `⚡ ${c.wait.event || 'socket'}`, socket: { url: c.url, query: c.query, token: c.token, emit: c.emit, wait: c.wait },
+    const sock = { url: c.url, query: c.query, token: c.token, emit: c.emit, wait: c.wait };
+    if (c.mode && c.mode !== 'once') { sock.mode = c.mode; sock.channel = c.channel || 'p1'; }
+    return { id: M.uid(), name: c.name || `⚡ ${c.wait.event || 'socket'}`, socket: sock,
       request: { method: 'GET', header: [], url: { raw: c.url }, body: { mode: 'raw', raw: c.emit && c.emit.data ? c.emit.data : '' }, auth: { type: 'noauth' } }, response: [], event: [] };
   };
 
@@ -73,8 +75,35 @@
    * A socket step: connect (query + token resolved from variables), emit one event if asked, then wait for
    * the named event (or any event) and hand its payload on as the "response" so checks and keeps work as usual.
    */
+  /*
+   * Sockets that stay open across steps. A "listen" step connects (with a player's JWT) and keeps the socket open
+   * under a channel name, collecting every event; a later "wait" step on the same channel takes the first event it
+   * wants that arrived after the previous wait — so an event pushed while an HTTP step runs (accept → childActivated)
+   * is not lost. Closed when a new listen reuses the channel, when the page closes, or after 15 minutes.
+   */
+  const openSockets = {};
+  T.openSockets = openSockets;
+  T.closeSockets = () => Object.keys(openSockets).forEach((k) => { try { openSockets[k].sock.disconnect(); } catch (e) { /* gone */ } delete openSockets[k]; });
+  window.addEventListener('beforeunload', () => T.closeSockets());
+
+  function socketResult(it, got, started, out, emitRaw, url) {
+    const body = JSON.stringify({ event: got.event, payload: got.payload === undefined ? null : got.payload });
+    const r = { status: 200, reason: 'event', headers: [['x-socket-event', got.event]], timeMs: Math.round(performance.now() - started), size: body.length, body, via: 'socket' };
+    const coll = S.coll.data, parents = M.parentsOf(coll.item, it) || [];
+    const env = T.envStore(), collVars = T.collStore(), local = T.localStore();
+    for (const sc of M.scriptsFor(it, parents, coll, 'test')) {
+      const o = M.runScript(sc.code, { env, coll: collVars, local, response: r, name: it.name });
+      o.logs.forEach((l) => out.logs.push(`[post-response · ${sc.from}] ${l}`));
+      o.tests.forEach((x) => out.tests.push(x));
+      if (o.error) out.errors.push(`post-response script (${sc.from}): ${o.error}`);
+    }
+    return { res: r, sent: { method: 'SOCKET', url, headers: [], body: emitRaw }, out };
+  }
+
   async function executeSocket(it) {
     const out = { logs: [], tests: [], errors: [] };
+    const mode = (it.socket && it.socket.mode) || 'once';
+    if (mode === 'wait') return waitOnOpenSocket(it, out);
     const scopes = T.scopes();
     const missing = new Set();
     const res = (t) => M.resolve(t, scopes, missing);
@@ -100,12 +129,26 @@
       const got = await new Promise((resolve, reject) => {
         const sock = io(url, { transports: ['websocket', 'polling'], query, auth: token ? { token } : undefined, reconnection: false, timeout: timeout * 1000, forceNew: true });
         const seen = [];
-        const done = (fn) => { clearTimeout(timer); try { sock.offAny(); sock.disconnect(); } catch (e) { /* closed */ } fn(); };
+        const done = (fn) => { clearTimeout(timer); if (mode === 'listen' && openSockets[String(it.socket.channel || 'p1')] && openSockets[String(it.socket.channel || 'p1')].sock === sock) return fn(); try { sock.offAny(); sock.disconnect(); } catch (e) { /* closed */ } fn(); };
         const timer = setTimeout(() => done(() => reject(new Error(`No "${waitEvent || 'event'}" within ${timeout} s` + (seen.length ? ` — got ${seen.slice(0, 5).map((x) => x.event).join(', ')} instead` : ' — nothing arrived')))), timeout * 1000);
         sock.on('connect_error', (err) => done(() => reject(new Error('Socket connect failed: ' + (err && err.message ? err.message : err)))));
         sock.on('connect', () => {
           out.logs.push(`[socket] connected ${url} as ${JSON.stringify(query)} via ${sock.io.engine.transport.name}`);
           if (emitEvent) { sock.emit(emitEvent, emitData); out.logs.push(`[socket] emitted ${emitEvent} ${emitRaw.slice(0, 200)}`); }
+          if (mode === 'listen') {
+            // Keep it: hand the socket to the channel and finish this step as "connected".
+            clearTimeout(timer);
+            const ch = String(it.socket.channel || 'p1');
+            if (openSockets[ch]) { try { openSockets[ch].sock.disconnect(); } catch (e) { /* gone */ } }
+            const entry = { sock, url, events: [], cursor: 0, idle: null };
+            const touch = () => { clearTimeout(entry.idle); entry.idle = setTimeout(() => { try { sock.disconnect(); } catch (e) { /* gone */ } if (openSockets[ch] === entry) delete openSockets[ch]; }, 15 * 60 * 1000); };
+            sock.offAny();
+            sock.onAny((event, ...args) => { entry.events.push({ event, payload: args.length <= 1 ? args[0] : args, at: Date.now() }); touch(); if (entry.wake) entry.wake(); });
+            sock.on('disconnect', (why) => entry.events.push({ event: 'disconnect', payload: why, at: Date.now() }));
+            openSockets[ch] = entry; touch();
+            out.logs.push(`[socket] listening on channel "${ch}" — later "Wait for an event" steps on "${ch}" read from it`);
+            resolve({ event: 'connect', payload: { channel: ch, id: sock.id, url }, seen });
+          }
         });
         sock.onAny((event, ...args) => {
           const payload = args.length <= 1 ? args[0] : args;
@@ -114,20 +157,49 @@
           if (!waitEvent || event === waitEvent) done(() => resolve({ event, payload, seen }));
         });
       });
-      const body = JSON.stringify({ event: got.event, payload: got.payload === undefined ? null : got.payload });
-      const r = { status: 200, reason: 'event', headers: [['x-socket-event', got.event]], timeMs: Math.round(performance.now() - started), size: body.length, body, via: 'socket' };
-      const coll = S.coll.data, parents = M.parentsOf(coll.item, it) || [];
-      const env = T.envStore(), collVars = T.collStore(), local = T.localStore();
-      for (const sc of M.scriptsFor(it, parents, coll, 'test')) {
-        const o = M.runScript(sc.code, { env, coll: collVars, local, response: r, name: it.name });
-        o.logs.forEach((l) => out.logs.push(`[post-response · ${sc.from}] ${l}`));
-        o.tests.forEach((x) => out.tests.push(x));
-        if (o.error) out.errors.push(`post-response script (${sc.from}): ${o.error}`);
-      }
-      out.tests.unshift({ name: `Got "${got.event}" after ${r.timeMs} ms`, ok: true });
-      result = { res: r, sent: { method: 'SOCKET', url, headers: [], body: emitRaw }, out };
+      result = socketResult(it, got, started, out, emitRaw, url);
+      out.tests.unshift({ name: mode === 'listen' ? `Connected and listening (channel "${it.socket.channel || 'p1'}")` : `Got "${got.event}" after ${result.res.timeMs} ms`, ok: true });
     } catch (e) {
       result = { error: e.message, out };
+    }
+    S.results.set(it.id, result);
+    return result;
+  }
+
+  async function waitOnOpenSocket(it, out) {
+    const cfg = it.socket;
+    const ch = String(cfg.channel || 'p1');
+    const missing = new Set();
+    const want = M.resolve((cfg.wait && cfg.wait.event) || '', T.scopes(), missing);
+    const timeout = Math.max(1, Math.min(300, Number(cfg.wait && cfg.wait.timeout) || 20));
+    const entry = openSockets[ch];
+    let result;
+    if (!entry) {
+      result = { error: `No open socket on channel "${ch}" — add a "Start listening" socket step for it earlier in the flow`, out };
+      S.results.set(it.id, result); return result;
+    }
+    const started = performance.now();
+    const pick = () => {
+      for (let i = entry.cursor; i < entry.events.length; i++) {
+        const e = entry.events[i];
+        if (!want ? e.event !== 'disconnect' : e.event === want) { entry.cursor = i + 1; return e; }
+      }
+      return null;
+    };
+    let got = pick();
+    if (!got) {
+      got = await new Promise((resolve) => {
+        const timer = setTimeout(() => { entry.wake = null; resolve(null); }, timeout * 1000);
+        entry.wake = () => { const e = pick(); if (e) { clearTimeout(timer); entry.wake = null; resolve(e); } };
+      });
+    }
+    const seen = entry.events.slice(-8).map((e) => e.event);
+    entry.events.forEach((e) => out.logs.push(`[socket "${ch}"] ← ${e.event} ${JSON.stringify(e.payload).slice(0, 300)}`));
+    if (!got) {
+      result = { error: `No "${want || 'event'}" on socket "${ch}" within ${timeout} s` + (seen.length ? ` — it got ${seen.join(', ')}` : ' — nothing arrived since it started listening'), out };
+    } else {
+      result = socketResult(it, got, started, out, '', entry.url);
+      out.tests.unshift({ name: `Got "${got.event}" on socket "${ch}"`, ok: true });
     }
     S.results.set(it.id, result);
     return result;
