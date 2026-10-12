@@ -61,10 +61,21 @@
     const scripted = scriptChecks(it);
     const passWords = st.rules.map(ruleWords).concat(scripted);
     out.push(['pass', 'Passes when ' + (passWords.length ? passWords.join(' · ') : 'the response looks OK (default)') + '.']);
-    const kept = st.save.map(([p, v]) => `${p} → {{${v}}}`);
-    const bySaves = new Set(st.save.map((x) => x[1]));
-    F.varsSetByScripts(it).filter((v) => !bySaves.has(v)).forEach((v) => kept.push(`{{${v}}}`));
-    if (kept.length) out.push(['keep', 'Remembers ' + kept.join(' · ') + '.']);
+    const me = rows ? rows.findIndex((r) => r.it.id === it.id) : -1;
+    const from = new Map(st.save.map(([p, v]) => [v, p]));
+    const saved = [...new Set(st.save.map((x) => x[1]).concat(F.varsSetByScripts(it, ['test'])))].filter(Boolean);
+    saved.forEach((v) => {
+      const users = me < 0 ? [] : laterUsers(rows, me, v);
+      const now = currentValue(v);
+      out.push(['keep', `Saves {{${v}}}` + (from.get(v) ? ` (the answer's ${from.get(v)})` : '') +
+        (users.length ? ` → used by step${users.length === 1 ? '' : 's'} ${users.join(', ')}` : ' → not used by a later step') +
+        (now ? ` · now: ${now}` : '')]);
+    });
+    if (me > 0) {
+      const own = new Set(setsBeforeSending(it));
+      const needs = F.varsUsed(it).filter((v) => !own.has(v)).map((v) => [v, savedBy(rows, me, v)]).filter(([, n]) => n);
+      if (needs.length) out.push(['need', 'Uses ' + needs.map(([v, n]) => `{{${v}}} from step ${n}`).join(' · ') + '.']);
+    }
     if (st.ask.length) out.push(['ask', 'Asks the tester for ' + st.ask.map((a) => `{{${a.var}}}`).join(', ') + '.']);
     if (it.repeat && Number(it.repeat.max) > 1) out.push(['retry', `If it does not pass, tries again every ${it.repeat.every} s, up to ${it.repeat.max} times.`]);
     if (it.branch) out.push(['branch', 'Shortcut: ' + T.branchText(it.branch, rows) + '.']);
@@ -80,7 +91,33 @@
     }
     return out.map((t) => `"${t}"`);
   }
-  const LINE_ICON = { wait: '⏱', who: '⚡', pass: '✓', keep: '⤓', ask: '✎', retry: '↻', branch: '⑂' };
+  const SECRET = /pass|token|secret|key|signature/i;
+  /** The value a {{name}} has right now (after a run in this page), shortened; secrets masked. */
+  function currentValue(v) {
+    const val = T.localStore().has(v) ? T.localStore().get(v) : null;   // set by a run in this page
+    if (val === null || val === undefined || String(val) === '') return '';
+    const text = String(val);
+    return SECRET.test(v) ? '•••• (set)' : text.length > 40 ? text.slice(0, 40) + '…' : text;
+  }
+  const savesOf = (it) => (T.isWaitStep(it) ? [] : F.stepOf(it).save.map((x) => x[1]).concat(F.varsSetByScripts(it, ['test'])));
+  const setsBeforeSending = (it) => (T.isWaitStep(it) ? [] : F.varsSetByScripts(it, ['prerequest']));
+  /** Step numbers after `me` that send {{v}}, until a later step saves it again. */
+  function laterUsers(rows, me, v) {
+    const out = [];
+    for (let j = me + 1; j < rows.length; j++) {
+      const it = rows[j].it;
+      if (setsBeforeSending(it).includes(v)) break;   // that step makes its own value
+      if (!T.isWaitStep(it) && F.varsUsed(it).includes(v)) out.push(j + 1);
+      if (savesOf(it).includes(v)) break;
+    }
+    return out;
+  }
+  /** The step number before `me` that last saved {{v}}, or 0. */
+  function savedBy(rows, me, v) {
+    for (let j = me - 1; j >= 0; j--) if (savesOf(rows[j].it).includes(v)) return j + 1;
+    return 0;
+  }
+  const LINE_ICON = { wait: '⏱', who: '⚡', pass: '✓', need: '↳', keep: '⤓', ask: '✎', retry: '↻', branch: '⑂' };
 
   /* ── the flow page ─────────────────────────────────────────────────────── */
 
@@ -445,13 +482,14 @@
           !st.rules.some((r) => r.field === 'status') ? h('button.ghost', { text: '+ "status" is true', onclick: () => { st.rules.push({ field: 'status', op: 'true' }); redraw(); } }) : ''));
 
       /* 3 · remember */
-      const keepPart = section('3', 'Remember for later steps', 'A value from the answer becomes {{name}} for every step after this one.',
+      const keepPart = section('3', 'Save from the answer, use in later steps', 'Example: save data.transaction_id as flow_tx — every later step can write {{flow_tx}} (in its URL, body or token) and the real id goes there when it runs.',
         st.save.map((row, i) => h('div.qa-row', {},
           h('input.mono', { value: row[0], list: listId, placeholder: 'value in the answer, e.g. data.transaction_id', 'aria-label': 'Value in the answer', oninput: (ev) => { row[0] = ev.target.value.trim(); touch(); } }),
           h('span', { text: 'as' }),
           h('input.mono', { value: row[1], placeholder: 'name, e.g. flow_tx', 'aria-label': 'Name', oninput: (ev) => { row[1] = ev.target.value.trim(); touch(); }, onchange: redraw }),
+          row[1] ? h('span.hint', { text: (() => { const u = laterUsers(steps.map((x) => ({ it: x.it })), idx, row[1]); return u.length ? `used by step${u.length === 1 ? '' : 's'} ${u.join(', ')}` : 'no later step uses it yet'; })() }) : '',
           h('button.ghost', { text: '✕', 'aria-label': 'Remove', onclick: () => { st.save.splice(i, 1); redraw(); } }))),
-        h('div.inline', {}, h('button.ghost', { text: '+ Remember a value', onclick: () => { st.save.push(['', '']); redraw(); } })));
+        h('div.inline', {}, h('button.ghost', { text: '+ Save a value', onclick: () => { st.save.push(['', '']); redraw(); } })));
 
       /* 4 · ask the tester */
       const askPart = section('4', 'Ask the tester while it runs', 'Only for what a person has — an OTP from SMS, a new password.',
@@ -504,7 +542,7 @@
         let j = null; try { j = JSON.parse(tried.res.body); } catch (e) { /* not JSON */ }
         answer = h('div.qa-answer', {},
           h('div.inline', {}, h('b', { class: tried.res.status < 300 ? 'mk-verified' : 'mk-failing', text: `HTTP ${tried.res.status}` }), h('span.faint', { text: `${tried.res.timeMs} ms` }),
-            j !== null ? h('span.hint', { text: 'Click ✓ to make it a condition, ⤓ to remember it' }) : ''),
+            j !== null ? h('span.hint', { text: 'Click ✓ to make it a condition, ⤓ to save it for later steps' }) : ''),
           (tried.out && tried.out.tests.length) ? h('ul.step-tests', {}, tried.out.tests.map((t) => h('li', { class: t.ok ? 'mk-verified' : 'mk-failing', text: (t.ok ? '✓ ' : '✕ ') + t.name + (t.error && !t.name.includes(t.error) ? ' — ' + t.error : '') }))) : '',
           j !== null ? h('div.qa-paths', {}, paths.slice(0, 60).map((p) => h('div.qa-path', {},
             h('code', { text: p.path }), h('span.faint', { text: ' = ' + p.value.slice(0, 80) }),
@@ -513,7 +551,7 @@
               const op = p.value === 'true' ? 'true' : p.value === 'false' ? 'false' : 'is';
               st.rules.push({ field: p.path, op, value: op === 'is' ? p.value : '' }); redraw();
             } }),
-            h('button.ghost.qa-mini', { text: '⤓', title: `Remember ${p.path}`, onclick: () => {
+            h('button.ghost.qa-mini', { text: '⤓', title: `Save ${p.path} for later steps`, onclick: () => {
               const key = (p.path.split('.').filter((x) => !/^\d+$/.test(x)).pop() || 'value').replace(/^_/, '').replace(/[^A-Za-z0-9_]/g, '_');
               st.save.push([p.path, key]); redraw();
             } }))))

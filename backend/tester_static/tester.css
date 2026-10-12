@@ -840,3 +840,4 @@ button.qa-pick:hover { background: var(--bg3); }
 }
 .qa-scripted { margin: 0; font-size: 13px; }
 .qa-q > .inline { justify-content: flex-start; }
+.qa-lines .l-need .qa-ico { color: var(--accent); }
