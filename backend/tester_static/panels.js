@@ -48,6 +48,10 @@
     return { id: M.uid(), name: `⏱ Wait ${s} s`, wait: s, request: { method: 'GET', header: [], url: { raw: 'wait://' + s, host: ['wait:'], path: [String(s)] }, auth: { type: 'noauth' } }, response: [], event: [] };
   };
 
+  /** A "⏸ Pause" step: the run stops, shows `it.pause` to the tester and goes on when they press Continue. */
+  T.isPauseStep = (it) => !!it && typeof it.pause === 'string';
+  T.pauseStep = (message) => ({ id: M.uid(), name: '⏸ Pause — ' + String(message || 'continue when ready').slice(0, 60), pause: String(message || ''),
+    request: { method: 'GET', header: [], url: { raw: 'pause://' }, auth: { type: 'noauth' } }, response: [], event: [] });
   T.isSocketStep = (it) => !!(it && it.socket && typeof it.socket === 'object');
   T.socketStep = (cfg) => {
     const c = Object.assign({ url: '', query: [], token: '', emit: { event: '', data: '' }, wait: { event: '', timeout: 20 } }, cfg || {});
@@ -231,6 +235,14 @@
   };
 
   async function executeOnce(it, opts) {
+    if (T.isPauseStep(it)) {
+      // The runner already showed the message and waited for Continue (the step "asks" for an optional note).
+      const note = String(T.localStore().get('pause_note') || '').trim();
+      T.localStore().unset ? T.localStore().unset('pause_note') : T.localStore().set('pause_note', '');
+      const result = { res: { status: 200, reason: 'continued', headers: [], timeMs: 0, size: 0, body: '', via: 'pause' }, out: { logs: [], tests: [{ name: 'The tester pressed Continue' + (note ? ' — ' + note : ''), ok: true }], errors: [] } };
+      S.results.set(it.id, result);
+      return result;
+    }
     if (T.isSocketStep(it)) return executeSocket(it);
     if (T.isWaitStep(it)) {
       const ms = Number(it.wait) * 1000;
@@ -337,7 +349,7 @@
   const LOOKUP = /history|statement|_log\b|log$|\blist\b|table_master|\/get|details?\b|\bstatus\b|agent_chats|\bwallet$|\/profile$|\/setting$|\/plan$|paymentmethod|currencyavailable|game_on_off|types$|info$|winners|\/welcome_bonus$|reffer_level/i;
 
   T.riskOf = function (it) {
-    if (T.isWaitStep(it)) return '';
+    if (T.isWaitStep(it) || T.isPauseStep(it)) return '';
     if (T.isSocketStep(it)) return it.socket.emit && String(it.socket.emit.event || '').trim() ? 'sends a socket event' : '';
     const req = M.req(it);
     const url = M.urlRaw(req);

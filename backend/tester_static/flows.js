@@ -145,7 +145,9 @@
   }
 
   /** Values a step asks the tester for while a flow runs (an OTP, a new password). */
-  T.stepAsks = (it) => (splitScript(M.script(it, 'test')).meta.ask || []).filter((a) => a && a.var);
+  T.stepAsks = (it) => (T.isPauseStep && T.isPauseStep(it)
+    ? [{ var: 'pause_note', label: (it.pause || 'Paused') + ' — then press Continue (a note is optional)' }]
+    : (splitScript(M.script(it, 'test')).meta.ask || []).filter((a) => a && a.var));
 
   /** Leaf paths of a JSON response, for the "save from response" suggestions. */
   function jsonPaths(body) {

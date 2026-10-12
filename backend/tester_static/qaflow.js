@@ -39,7 +39,7 @@
   const THEN = { end: 'end the flow here (counts as passed)', skip: 'skip the next step', jump: 'go to step…' };
 
   const pathOf = (req) => M.urlRaw(req).replace(/^\{\{agp_url\}\}/, '').replace(/^https?:\/\/[^/]+/, '') || M.urlRaw(req);
-  const methodOf = (it) => (T.isWaitStep(it) ? 'WAIT' : T.isSocketStep(it) ? 'SOCKET' : (M.req(it).method || 'GET').toUpperCase());
+  const methodOf = (it) => (T.isWaitStep(it) ? 'WAIT' : T.isPauseStep(it) ? 'PAUSE' : T.isSocketStep(it) ? 'SOCKET' : (M.req(it).method || 'GET').toUpperCase());
 
   function ruleWords(r) {
     if (r.field === '@ok') return 'the response looks OK (HTTP 2xx, no "status": false)';
@@ -51,6 +51,7 @@
   /** Plain lines that describe a step: who sends what, when it passes, what it keeps, retries, shortcut. */
   function stepLines(it, rows) {
     if (T.isWaitStep(it)) return [['wait', `Waits ${it.wait} seconds, then goes on.`]];
+    if (T.isPauseStep(it)) return [['pause', `Stops and tells the tester: "${it.pause}" — goes on when they press Continue.`]];
     const st = F.stepOf(it);
     const out = [];
     if (T.isSocketStep(it)) {
@@ -139,7 +140,7 @@
     for (let j = me - 1; j >= 0; j--) if (savesOf(rows[j].it).includes(v)) return j + 1;
     return 0;
   }
-  const LINE_ICON = { wait: '⏱', who: '⚡', send: '➚', pass: '✓', need: '↳', keep: '⤓', ask: '✎', retry: '↻', branch: '⑂' };
+  const LINE_ICON = { pause: '⏸', wait: '⏱', who: '⚡', send: '➚', pass: '✓', need: '↳', keep: '⤓', ask: '✎', retry: '↻', branch: '⑂' };
 
   /* ── the flow page ─────────────────────────────────────────────────────── */
 
@@ -238,7 +239,7 @@
             h('div.qa-sub', {},
               who ? h('span.qa-who', { class: 'w-' + st.runAs, text: who }) : '',
               h('span.meth', { class: 'm-' + methodOf(it), text: methodOf(it).slice(0, 6) }),
-              T.isWaitStep(it) ? '' : h('code.qa-url', { text: T.isSocketStep(it) ? (it.socket.url || '') : pathOf(M.req(it)) }))),
+              T.isWaitStep(it) || T.isPauseStep(it) ? '' : h('code.qa-url', { text: T.isSocketStep(it) ? (it.socket.url || '') : pathOf(M.req(it)) }))),
           h('div.qa-tools', {},
             h('button.ghost.qa-mini', { text: '▶ Run to here', title: `Run steps 1–${i + 1} now`, onclick: () => T.runUpTo(rows, i, refresh) }),
             toggle)),
@@ -463,7 +464,8 @@
     function addBar() {
       return h('div.qa-add', {},
         h('button.primary', { text: '+ Add an API call', onclick: () => { picker = { at: steps.length }; draw(); } }),
-        h('button', { text: '⏱ + Wait', title: 'Pause — e.g. a payout that arrives a few seconds later', onclick: () => { steps.push(F.stepOf(T.waitStep(10))); touch(); draw(); } }),
+        h('button', { text: '⏱ + Wait', title: 'Wait some seconds — e.g. a payout that arrives a few seconds later', onclick: () => { steps.push(F.stepOf(T.waitStep(10))); touch(); draw(); } }),
+        h('button', { text: '⏸ + Pause', title: 'Stop and wait for the tester — e.g. play the match in the app, then press Continue', onclick: () => { const st = F.stepOf(T.pauseStep('Play the match in the app now, then press Continue')); st.open = true; steps.push(st); touch(); draw(); } }),
         h('button', { text: '⚡ + Socket', title: 'Listen on a player\'s socket, or wait for an event on it', onclick: (ev) => T.menu(ev.currentTarget, [
           { label: '👂 Start listening on a player\'s socket', run: () => addSocket({ mode: 'listen', channel: 'p2', url: '{{socket_url}}', token: '{{p2_token}}', name: '👂 Player 2 starts listening on the socket' }) },
           { label: '⏳ Wait for an event on an open socket', run: () => addSocket({ mode: 'wait', channel: 'p2', wait: { event: '', timeout: 30 }, name: '⏳ Player 2 gets the socket event' }) },
@@ -502,6 +504,19 @@
       const it = st.it;
       const move = (d) => { const j = idx + d; if (j < 0 || j >= steps.length) return; steps.splice(idx, 1); steps.splice(j, 0, st); touch(); draw(); };
       const preview = F.finalItem(st);
+      if (T.isPauseStep(it)) {
+        return h('div.qa-card', {},
+          h('div.qa-head', {},
+            h('span.qa-num', { text: String(idx + 1) }),
+            h('div.qa-title', {}, h('b', { text: '⏸ Pause — wait for the tester' }),
+              h('textarea', { rows: 2, value: it.pause, 'aria-label': 'Message for the tester', placeholder: 'What the tester should do before pressing Continue', oninput: (ev) => { it.pause = ev.target.value; it.name = '⏸ Pause — ' + ev.target.value.slice(0, 60); touch(); } })),
+            h('div.qa-tools', {},
+              h('button.ghost', { text: '↑', title: 'Move up', 'aria-label': 'Move up', disabled: idx === 0, onclick: () => move(-1) }),
+              h('button.ghost', { text: '↓', title: 'Move down', 'aria-label': 'Move down', disabled: idx === steps.length - 1, onclick: () => move(1) }),
+              h('button.ghost', { text: '+', title: 'Add a step after this one', 'aria-label': 'Add after', onclick: () => { picker = { at: idx + 1 }; draw(); } }),
+              h('button.ghost.danger', { text: '✕', title: 'Remove this step', 'aria-label': 'Remove', onclick: () => { steps.splice(idx, 1); touch(); draw(); } }))),
+          h('p.hint', { text: 'The run stops here and shows this message; it goes on when the tester presses Continue.' }));
+      }
       const head = h('div.qa-head', {},
         h('span.qa-num', { text: String(idx + 1) }),
         st.wait ? h('div.qa-title', {}, h('b', { text: `⏱ Wait` }), h('div.qa-sub', {}, 'Wait ',

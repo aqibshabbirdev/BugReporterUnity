@@ -857,3 +857,4 @@ a.btn-link { display: inline-flex; align-items: center; padding: 5px 10px; borde
 .flow-caret { width: 12px; color: var(--muted); }
 .flow-group-fail { color: var(--red); font-size: 12px; font-weight: 500; }
 .flow-row.in-folder { padding-left: 28px; }
+.qa-lines .l-pause .qa-ico { color: var(--amber); } .m-PAUSE { color: var(--amber); }
