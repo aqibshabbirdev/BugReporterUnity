@@ -48,6 +48,28 @@ def page():
     return resp
 
 
+# The flows guide: docs/API-TESTER-FLOWS.md is the one source. Deploy copies it next to the page as guide.md
+# (.cpanel.yml); a checkout reads it from docs/ directly.
+GUIDE_MD = [os.path.join(STATIC_DIR, "guide.md"),
+            os.path.abspath(os.path.join(STATIC_DIR, "..", "..", "docs", "API-TESTER-FLOWS.md"))]
+
+
+@bp.get(PAGE + "/guide")
+def guide_page():
+    resp = send_from_directory(STATIC_DIR, "guide.html")
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@bp.get(PAGE + "/guide.md")
+def guide_md():
+    for path in GUIDE_MD:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as fh:
+                return fh.read(), 200, {"Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-cache"}
+    return "guide not found", 404
+
+
 @bp.get(PAGE + "/static/<path:name>")
 def static_asset(name):
     resp = send_from_directory(STATIC_DIR, name)

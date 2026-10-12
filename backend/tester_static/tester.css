@@ -843,3 +843,4 @@ button.qa-pick:hover { background: var(--bg3); }
 .qa-lines .l-need .qa-ico { color: var(--accent); }
 .qa-var-fix { display: inline-flex; gap: 4px; align-items: center; }
 select.qa-swap { font-size: 12px; padding: 1px 6px; max-width: 260px; }
+a.btn-link { display: inline-flex; align-items: center; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); text-decoration: none; font-size: 13px; } a.btn-link:hover { background: var(--bg-hover); }

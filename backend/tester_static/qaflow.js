@@ -146,7 +146,7 @@
       el.replaceChildren(h('div.flows-empty', {},
         h('h2', { text: 'Flows' }),
         h('p', { text: 'A flow is a list of API calls that run one after another, like a real game: log in, start a match, finish it, check the coins.' }),
-        h('button.primary', { text: '+ Create your first flow', onclick: () => T.flowBuilder() })));
+        h('div.inline', {}, h('button.primary', { text: '+ Create your first flow', onclick: () => T.flowBuilder() }), h('a', { href: '/apitestingbruno/guide', target: '_blank', rel: 'noopener', text: '📖 How flows work' }))));
       return;
     }
     const st = F.flowState(flow);
@@ -621,7 +621,7 @@
         h('div.qa-meta', {}, h('label', { for: 'qa-name', text: 'Flow name' }), nameIn, h('label', { for: 'qa-desc', text: 'What it proves' }), descIn),
         top, list),
       h('footer', {},
-        h('span.hint.grow', { text: 'Steps run top to bottom and stop at the first one that does not pass. Steps are copies — editing them never changes the API list.' }),
+        h('span.hint.grow', {}, 'Steps run top to bottom and stop at the first one that does not pass. ', h('a', { href: '/apitestingbruno/guide#8-edit-a-step--the-six-questions', target: '_blank', rel: 'noopener', text: '📖 Guide' })),
         h('button', { text: 'Cancel', onclick: () => close() }), runBtn, saveBtn));
     overlay.replaceChildren(box);
     overlay.onclick = (ev) => { if (ev.target === overlay) close(); };

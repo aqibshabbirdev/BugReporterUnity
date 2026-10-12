@@ -207,7 +207,7 @@
         collSel,
         h('button', { text: 'Import', title: 'Import a Postman collection or environment (.json)', onclick: () => T.importFile() }),
         h('button.ghost', { text: '⋯', title: 'Collection actions', onclick: (ev) => T.collMenu(ev.currentTarget) })),
-      h('div.group', {}, envSel, h('button', { text: 'Variables', onclick: () => T.envDialog() })),
+      h('div.group', {}, envSel, h('button', { text: 'Variables', onclick: () => T.envDialog() }), h('a.btn-link', { href: '/apitestingbruno/guide', target: '_blank', rel: 'noopener', text: '📖 Guide', title: 'How to read, run, create and edit flows' })),
       h('span.grow'),
       h('div.group', {}, R.saved, R.saveBtn, h('span.faint.who', { text: (S.me.team_name ? S.me.team_name + ' · ' : '') + S.me.email, title: 'Collections and environments here belong to this team' }), h('a', { href: '/', text: 'Dashboard' }))
     );

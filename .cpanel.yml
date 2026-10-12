@@ -7,4 +7,5 @@ deployment:
     - /bin/mkdir -p $DEPLOYPATH/backend $DEPLOYPATH/tmp
     - /bin/cp -R backend/app backend/tester_static backend/static backend/main.py $DEPLOYPATH/backend/
     - /bin/cp passenger_wsgi.py main.py requirements.txt $DEPLOYPATH/
+    - /bin/cp docs/API-TESTER-FLOWS.md $DEPLOYPATH/backend/tester_static/guide.md
     - /bin/touch $DEPLOYPATH/tmp/restart.txt
