@@ -1271,4 +1271,7 @@
     drawLibrary(); drawSteps();
     (folder ? nameIn : search).focus();
   };
+
+  // The simple QA editor (qaflow.js) builds on the same steps, checks and saved values.
+  T._fb = { splitScript, stepOf, finalItem, copyFromLibrary, RUN_AS, jsonPaths, setupCard, flowState, KIND_LABEL, flowsRoot, ago, varsSetByScripts, varsUsed, flowView, EXAMPLES };
 })();
