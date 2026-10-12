@@ -319,7 +319,7 @@
     [...groups.keys()].sort((a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b))).forEach((g) => {
       const flows = groups.get(g);
       if (!g) { if (groups.size > 1) blocks.push(h('div.flow-group-head.plain', {}, h('span.label', { text: 'Not in a folder' }))); flows.forEach((f) => blocks.push(row(f, false))); return; }
-      const open = searching || !closed.has(g) || flows.includes(cur);
+      const open = searching || !closed.has(g);   // a folder you close stays closed, even with its flow open on the right
       const failing = flows.filter((f) => F.flowState(f).kind === 'fail').length;
       const toggle = () => { const c = closedGroups(); if (c.has(g)) c.delete(g); else c.add(g); T.ls.set('flowGroupsClosed', JSON.stringify([...c])); T.renderTree(); };
       blocks.push(h('div.flow-group-head', { role: 'button', tabindex: 0, 'aria-expanded': String(open), onclick: toggle, onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); } } },
