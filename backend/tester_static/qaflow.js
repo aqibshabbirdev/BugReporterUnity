@@ -305,9 +305,18 @@
         if (kept.has(k)) return h('span.qa-var.ok', { text: `{{${k}}} ← step ${kept.get(k)}` });
         const sc = scopes.find((s) => s.has(k));
         const v = sc ? String(sc.get(k) == null ? '' : sc.get(k)) : null;
-        if (v !== null && v.trim()) return h('span.qa-var', { text: `{{${k}}} — Variables` });
-        if (!hard.has(k)) return h('span.qa-var', { text: `{{${k}}} — optional, empty`, title: 'Only sent as an extra header; the call works without it' });
-        return h('span.qa-var.bad', { text: `{{${k}}} — no value!`, title: 'Remember it in an earlier step, ask the tester for it, or fill it in Variables' });
+        let chip;
+        if (v !== null && v.trim()) chip = h('span.qa-var', { text: `{{${k}}} — Variables`, title: 'A fixed value from Variables — not from this run' });
+        else if (!hard.has(k)) return h('span.qa-var', { text: `{{${k}}} — optional, empty`, title: 'Only sent as an extra header; the call works without it' });
+        else chip = h('span.qa-var.bad', { text: `{{${k}}} — no value!`, title: 'Save it in an earlier step, ask the tester for it, or fill it in Variables' });
+        if (!kept.size || /_url$|^base_?url$/i.test(k)) return chip;   // server addresses are not per-run values
+        // One click to take it from an earlier step instead (e.g. a library call that still says {{agp_session_id}}).
+        const swap = h('select.qa-swap', { 'aria-label': `Use a saved value instead of {{${k}}}`, onchange: () => {
+          if (!swap.value) return;
+          T.stepUseVar(st.it, k, swap.value); touch(); draw();
+          T.toast(`This step now uses {{${swap.value}}} instead of {{${k}}}`);
+        } }, h('option', { value: '', text: '↺ use a saved value instead…' }), [...kept.keys()].map((n) => h('option', { value: n, text: `{{${n}}} from step ${kept.get(n)}` })));
+        return h('span.qa-var-fix', {}, chip, swap);
       });
       return parts.length ? h('div.qa-uses', {}, h('span.hint', { text: 'Uses ' }), parts) : '';
     }
@@ -446,14 +455,30 @@
         const who = h('select', { 'aria-label': 'Who sends it', onchange: () => { st.runAs = who.value; redraw(); } },
           Object.entries(WHO).map(([k, v]) => h('option', { value: k, text: v, selected: st.runAs === k })));
         const bodyRaw = req.body && req.body.mode === 'raw';
+        // "Insert a saved value": puts {{name}} where the cursor was in the URL or the body.
+        let lastField = null, lastPos = null;
+        const remember = (el) => { lastField = el; lastPos = [el.selectionStart, el.selectionEnd]; };
+        const kept = keptBefore(idx);
+        const insert = kept.size ? h('select.qa-swap', { 'aria-label': 'Insert a saved value', onchange: (ev) => {
+          const name = ev.target.value; ev.target.value = '';
+          if (!name) return;
+          const el = lastField || bodyEl || urlEl;
+          const [a, b] = lastField && lastPos ? lastPos : [el.value.length, el.value.length];
+          el.value = el.value.slice(0, a) + `{{${name}}}` + el.value.slice(b);
+          el.dispatchEvent(new Event('input'));
+          redraw();
+        } }, h('option', { value: '', text: '+ Insert a saved value…' }), [...kept.keys()].map((n) => h('option', { value: n, text: `{{${n}}} — saved by step ${kept.get(n)}` }))) : '';
+        const urlEl = h('input.mono', { value: M.urlRaw(req), 'aria-label': 'URL', onblur: (ev) => remember(ev.target), onclick: (ev) => remember(ev.target), onkeyup: (ev) => remember(ev.target), oninput: (ev) => { if (typeof req.url === 'string' || !req.url) req.url = { raw: ev.target.value }; else { req.url.raw = ev.target.value; delete req.url.host; delete req.url.path; delete req.url.query; } touch(); } });
+        const bodyEl = bodyRaw ? h('textarea.mono', { rows: Math.min(10, Math.max(3, String(req.body.raw || '').split('\n').length)), value: req.body.raw || '', 'aria-label': 'Body', onblur: (ev) => remember(ev.target), onclick: (ev) => remember(ev.target), onkeyup: (ev) => remember(ev.target), oninput: (ev) => { req.body.raw = ev.target.value; touch(); } }) : null;
         requestPart = section('1', 'What is sent', 'Who sends it decides which login token goes with it.',
           h('div.qa-grid', {},
             h('label', { text: 'Who sends it' }), who,
             h('label', { text: 'Call' }), h('div.inline.qa-call', {},
               h('select', { 'aria-label': 'Method', onchange: (ev) => { req.method = ev.target.value; redraw(); } }, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => h('option', { text: m, selected: (req.method || 'GET').toUpperCase() === m }))),
-              h('input.mono', { value: M.urlRaw(req), 'aria-label': 'URL', oninput: (ev) => { if (typeof req.url === 'string' || !req.url) req.url = { raw: ev.target.value }; else { req.url.raw = ev.target.value; delete req.url.host; delete req.url.path; delete req.url.query; } touch(); } })),
+              urlEl),
             bodyRaw ? h('label', { text: 'Body' }) : '',
-            bodyRaw ? h('textarea.mono', { rows: Math.min(10, Math.max(3, String(req.body.raw || '').split('\n').length)), value: req.body.raw || '', oninput: (ev) => { req.body.raw = ev.target.value; touch(); } }) : ''));
+            bodyEl || '',
+            insert ? h('span') : '', insert ? h('div.inline', {}, insert, h('span.hint', { text: 'Click in the URL or body first, then pick — it goes where the cursor is.' })) : ''));
       }
 
       /* 2 · when it passes */
