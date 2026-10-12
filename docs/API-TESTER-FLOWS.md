@@ -280,7 +280,8 @@ Good to know:
 - Each player has one socket in a flow (*Player 1's socket*, *Player 2's socket*). A second *Start listening* on the
   same one replaces it.
 - Every *Wait* takes the next event after the previous wait on that socket; one event is never read twice.
-- With **Wait for event** empty, the step takes whatever arrives next.
+- **Always name the event.** The main socket sends events all the time (`round:tick` every second, `wallet:balance`,
+  `round:sync`), so with **Wait for event** empty the step just takes the next of those.
 - The match-server socket is `{{socket_url}}/emit` with Query `type=mobile-client`.
 - A wrong or expired JWT shows **Socket connect failed: unauthorized** — run the login step first.
 - An open socket closes when the page closes, or after 15 minutes without events.
