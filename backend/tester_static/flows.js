@@ -120,7 +120,7 @@
       const refName = String(r.ref || '').replace(/^\{\{|\}\}$/g, '');
       return `  { const v = get(${js(r.field)}); const want = pm.variables.replaceIn(${js(String(r.value == null ? '' : r.value))}); const before = pm.variables.replaceIn(${js(String(r.ref || ''))}); pm.test(${js(label)} + (${js(!!op.value)} ? ' ' + want : '') + ${js((r.op === 'same' ? ' ' : ' since ') + refName)} + ' — ' + show(before) + ' → ' + show(v), () => { if (before === ${js(String(r.ref || ''))} || before === '') throw new Error(${js('{{' + refName + '}} has no value — the step that keeps it did not run')}); if (!(${cond})) throw new Error('was ' + show(before) + ', now ' + show(v) + (${js(!!op.value)} ? ' (moved ' + (Number(v) - Number(before)) + ', expected ' + (${js(r.op === 'downby')} ? '−' : '+') + want + ')' : '')); }); }`;
     }
-    return `  { const v = get(${js(r.field)}); const want = pm.variables.replaceIn(${js(String(r.value == null ? '' : r.value))}); pm.test(${js(label)} + (${js(!!op.value)} ? ' ' + want : '') + ' — got ' + show(v), () => { if (!(${cond})) throw new Error('got ' + show(v)); }); }`;
+    return `  { const v = get(${js(r.field)}); const want = pm.variables.replaceIn(${js(String(r.value == null ? '' : r.value))}); pm.test(${js(label)} + (${js(!!op.value)} ? ' ' + hide(${js(r.field)}, want) : '') + ' — got ' + hide(${js(r.field)}, show(v)), () => { if (!(${cond})) throw new Error('got ' + hide(${js(r.field)}, show(v))); }); }`;
   }
 
   function builderBlock(meta) {
@@ -134,10 +134,12 @@
       "  const get = (p) => p === '@status' ? pm.response.code : p === '@time' ? pm.response.responseTime : String(p).split('.').filter(Boolean).reduce((o, k) => (o == null ? undefined : o[k]), j);",
       "  const show = (v) => v === undefined ? 'missing' : v !== null && typeof v === 'object' ? JSON.stringify(v) : String(v);",
       "  const isEmpty = (v) => v == null || v === '' || (Array.isArray(v) && !v.length) || (typeof v === 'object' && !Object.keys(v).length);",
-      "  const isNum = (v) => v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));"];
+      "  const isNum = (v) => v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));",
+      // Test names end up in shared reports: never print a token, password, OTP or key there.
+      "  const hide = (name, text) => /token|pass|secret|signature|otp|key/i.test(name) && text && text !== 'missing' ? '•••• (' + String(text).length + ' chars)' : text;"];
     rules.forEach((r) => out.push(ruleCode(r)));
     save.forEach(([p, v]) => out.push(
-      `  { const v = get(${js(p)}); pm.test(${js('Saved {{' + v.trim() + '}} from ' + p.trim() + ' = ')} + show(v), () => { if (v === undefined || v === null || v === '') throw new Error(${js(p.trim() + ' is not in the response')}); }); if (v !== undefined && v !== null) pm.variables.set(${js(v.trim())}, typeof v === 'object' ? JSON.stringify(v) : String(v)); }`));
+      `  { const v = get(${js(p)}); pm.test(${js('Saved {{' + v.trim() + '}} from ' + p.trim() + ' = ')} + hide(${js(p + ' ' + v)}, show(v)), () => { if (v === undefined || v === null || v === '') throw new Error(${js(p.trim() + ' is not in the response')}); }); if (v !== undefined && v !== null) pm.variables.set(${js(v.trim())}, typeof v === 'object' ? JSON.stringify(v) : String(v)); }`));
     out.push('}', END);
     return out.join('\n');
   }
