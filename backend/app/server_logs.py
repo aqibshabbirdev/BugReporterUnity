@@ -46,11 +46,16 @@ _NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
 _cache = {"roots": None, "at": 0.0}
 
 
+def _env(name, default=""):
+    # .env values pasted with spaces, a newline or quotes around them sign wrongly (SignatureDoesNotMatch).
+    return os.environ.get(name, default).strip().strip('"').strip("'").strip()
+
+
 def _cfg():
-    c = {"bucket": os.environ.get("S3_LOGS_BUCKET", ""), "region": os.environ.get("S3_LOGS_REGION", ""),
-         "key": os.environ.get("S3_LOGS_KEY_ID", ""), "secret": os.environ.get("S3_LOGS_SECRET", ""),
-         "storage": os.environ.get("S3_LOGS_STORAGE", "luckygames"), "app": os.environ.get("S3_LOGS_APP", "games-baba"),
-         "endpoint": os.environ.get("S3_LOGS_ENDPOINT", "")}
+    c = {"bucket": _env("S3_LOGS_BUCKET"), "region": _env("S3_LOGS_REGION"),
+         "key": _env("S3_LOGS_KEY_ID"), "secret": _env("S3_LOGS_SECRET"),
+         "storage": _env("S3_LOGS_STORAGE", "luckygames"), "app": _env("S3_LOGS_APP", "games-baba"),
+         "endpoint": _env("S3_LOGS_ENDPOINT")}
     missing = [n for n, k in (("S3_LOGS_BUCKET", "bucket"), ("S3_LOGS_REGION", "region"), ("S3_LOGS_KEY_ID", "key"),
                               ("S3_LOGS_SECRET", "secret")) if not c[k]]
     return c, missing
