@@ -40,6 +40,11 @@ from .stats import _team_project_ids, require_stats_reader
 bp = Blueprint("server_logs", __name__)
 
 BASE = "edgegap/arbitrium/"
+# Where Edgegap writes in the bucket depends on how its storage endpoint was typed: on 13 Oct the logs were under
+# "luckygamesappdev/edgegap/arbitrium/…" (bucket name repeated) and older ones under a quoted '"/luckygamesappdev/…'.
+# S3_LOGS_PREFIXES (comma separated) overrides the list.
+BASES = [p for p in (os.environ.get("S3_LOGS_PREFIXES") or
+                     'edgegap/arbitrium/,luckygamesappdev/edgegap/arbitrium/,"/luckygamesappdev/edgegap/arbitrium/').split(",") if p]
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_LINES = 5000
 _NS = "{http://s3.amazonaws.com/doc/2006-03-01/}"
@@ -122,8 +127,9 @@ def _version_roots(c):
     if _cache["roots"] is not None and time.time() - _cache["at"] < 600:
         return _cache["roots"]
     roots = []
-    for client in _list(c, BASE, "/")[0]:
-        roots += _list(c, f"{client}{c['storage']}/{c['app']}/", "/")[0]
+    for base in BASES:
+        for client in _list(c, base, "/")[0]:
+            roots += _list(c, f"{client}{c['storage']}/{c['app']}/", "/")[0]
     _cache.update(roots=roots, at=time.time())
     return roots
 
@@ -202,7 +208,7 @@ def one_file():
     if missing:
         return jsonify(error="server logs not configured — set " + ", ".join(missing)), 503
     key = request.args.get("key", "")
-    if not key.startswith(BASE) or "/container_log/" not in key or ".." in key:
+    if not any(key.startswith(b) for b in BASES) or "/container_log/" not in key or ".." in key:
         return jsonify(error="not a container log key"), 400
     try:
         raw = _get(c, "/" + key, {})
