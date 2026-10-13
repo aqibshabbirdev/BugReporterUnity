@@ -51,7 +51,11 @@
   /** Plain lines that describe a step: who sends what, when it passes, what it keeps, retries, shortcut. */
   function stepLines(it, rows) {
     if (T.isWaitStep(it)) return [['wait', `Waits ${it.wait} seconds, then goes on.`]];
-    if (T.isPauseStep(it)) return [['pause', `Stops and tells the tester: "${it.pause}" — goes on when they press Continue.`]];
+    if (T.isPauseStep(it)) {
+      const asks = (it.pauseAsk || []).filter((a) => a && a.var);
+      return [['pause', `Stops and tells the tester: "${it.pause}" — goes on when they press Continue.`]]
+        .concat(asks.map((a) => ['ask', `Asks for {{${a.var}}}: ${a.label || ''}`]));
+    }
     const st = F.stepOf(it);
     const out = [];
     if (T.isSocketStep(it)) {

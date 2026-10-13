@@ -146,7 +146,8 @@
 
   /** Values a step asks the tester for while a flow runs (an OTP, a new password). */
   T.stepAsks = (it) => (T.isPauseStep && T.isPauseStep(it)
-    ? [{ var: 'pause_note', label: (it.pause || 'Paused') + ' — then press Continue (a note is optional)' }]
+    // A pause can also ask for values (it.pauseAsk), e.g. the MatchKey copied from the server log.
+    ? [{ var: 'pause_note', label: (it.pause || 'Paused') + ' — then press Continue (a note is optional)' }].concat((it.pauseAsk || []).filter((a) => a && a.var))
     : (splitScript(M.script(it, 'test')).meta.ask || []).filter((a) => a && a.var));
 
   /** Leaf paths of a JSON response, for the "save from response" suggestions. */

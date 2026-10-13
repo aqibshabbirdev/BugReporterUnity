@@ -275,7 +275,8 @@
       }
       if (opts && opts.skipEmpty) {
         const used = new Set(M.varsIn(template.url));
-        template.headers.forEach(([k, v]) => { if (/^authorization$/i.test(k)) M.varsIn(v).forEach((x) => used.add(x)); });
+        // x-match-key too: a game-server step whose key the tester left empty is skipped, not sent without it.
+        template.headers.forEach(([k, v]) => { if (/^(authorization|x-match-key)$/i.test(k)) M.varsIn(v).forEach((x) => used.add(x)); });
         const empty = [...used].filter((k) => { const sc = scopes.find((x) => x.has(k)); return sc && String(sc.get(k) == null ? '' : sc.get(k)).trim() === ''; });
         if (empty.length) {
           result = { skipped: `empty ${empty.map((k) => '{{' + k + '}}').join(', ')} — run the login request first or fill it in Variables`, out };
