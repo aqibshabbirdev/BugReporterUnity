@@ -125,9 +125,21 @@ def _version_roots(c):
 
 def _err(e):
     if isinstance(e, urllib.error.HTTPError):
-        body = e.read(2000).decode("utf-8", "replace")
-        code = (ET.fromstring(body).findtext("Code") if body.startswith("<") else None) or body[:200]
-        return jsonify(error=f"S3 {e.code}: {code}"), 502
+        try:
+            body = e.read(2000).decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001 — the body was already read or the socket closed
+            body = ""
+        code = None
+        if body.startswith("<"):
+            try:
+                root = ET.fromstring(body)
+                code = root.findtext("Code") or root.findtext(_NS + "Code")
+                msg = root.findtext("Message") or root.findtext(_NS + "Message")
+                if msg:
+                    code = f"{code}: {msg}"
+            except ET.ParseError:
+                code = None
+        return jsonify(error=f"S3 {e.code}: {code or body[:200] or e.reason}"), 502
     return jsonify(error=f"S3: {type(e).__name__}: {e}"), 502
 
 
@@ -143,6 +155,13 @@ def day_files():
     except ValueError:
         return jsonify(error="date must be YYYY-MM-DD"), 400
     q = request.args.get("q", "").strip().lower()
+    try:
+        return _day_files(c, date, q)
+    except Exception as e:  # noqa: BLE001 — a reason in the panel, never a bare 500
+        return _err(e)
+
+
+def _day_files(c, date, q):
     try:
         files = []
         for root in _version_roots(c):
@@ -236,20 +255,25 @@ def _for_match(tx):
         marks = ",".join("?" * len(ids)) or "''"
         row = conn.execute(f"SELECT body, created_at FROM match_logs WHERE project_id IN ({marks}) AND transaction_id = ?",
                            (*ids, tx)).fetchone() if ids else None
+    asked_rid = request.args.get("request_id", "").strip().lower()[:40]
     if row is None:
-        return jsonify(error="match not found"), 404
-    try:
-        b = json.loads(row["body"])
-    except ValueError:
-        b = {}
-    rid = str(b.get("request_id") or "").strip().lower()
+        # No match log: a match that never finished (a disconnect, a server that stopped). Look in the logs of the
+        # last two days (UTC) for the request id when one is given, else for the transaction id.
+        b = {"request_id": asked_rid}
+        row = {"created_at": time.time()}
+    else:
+        try:
+            b = json.loads(row["body"])
+        except ValueError:
+            b = {}
+    rid = str(b.get("request_id") or asked_rid or "").strip().lower()
     end = _ts(b.get("ended_at")) or float(row["created_at"])
     try:
         key = _found.get(tx)
         text = cut = None
         if not key:
             # The log is saved when the deployment stops: the match's day or the next (UTC).
-            days = sorted({datetime.datetime.fromtimestamp(end + d, datetime.timezone.utc).strftime("%Y-%m-%d") for d in (0, 86400)})
+            days = sorted({datetime.datetime.fromtimestamp(end + d, datetime.timezone.utc).strftime("%Y-%m-%d") for d in (-86400, 0, 86400)})
             files = []
             for root in _version_roots(c):
                 for d in days:
@@ -260,10 +284,11 @@ def _for_match(tx):
                 # No request id (older server builds): the logs saved within 6 h after the match, nearest first,
                 # and the first one that mentions the transaction id.
                 near = []
+                lo, hi = (end - 2 * 86400, end + 60) if "ended_at" not in b else (end - 120, end + 6 * 3600)
                 for f in files:
                     t = _ts(f["modified"])
-                    if t is not None and end - 120 <= t <= end + 6 * 3600:
-                        near.append((t - end, f["key"]))
+                    if t is not None and lo <= t <= hi:
+                        near.append((abs(t - end), f["key"]))
                 started = time.time()
                 for _, k in sorted(near)[:15]:
                     if time.time() - started > 12:
