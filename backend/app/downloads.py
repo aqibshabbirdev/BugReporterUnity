@@ -3,6 +3,8 @@
 Upload an APK with the hybridclr@ FTP account into its `apk/` folder (BR_HOTUPDATE_DIR/apk) — nothing else.
 The page lists the newest APK first (by upload time) with a big download button, and the older ones below.
 An optional `<same name>.txt` next to an APK is shown as its notes ("what's new").
+An optional `<same name>.url` holding one https:// address sends that APK's downloads there (a 302), e.g. a copy on
+S3: this host is slow for 280 MB files (16 Oct 2026). The page still shows the local file's size and upload time.
 
   /download               the page
   /download/latest.apk    always the newest APK (a link that never changes)
@@ -12,7 +14,7 @@ import datetime
 import html
 import os
 
-from flask import Blueprint, abort, send_from_directory
+from flask import Blueprint, abort, redirect, send_from_directory
 
 from .hotupdate import _root
 
@@ -43,7 +45,23 @@ def _apks():
     return sorted(out, key=lambda a: a["mtime"], reverse=True)
 
 
+def _mirror(name):
+    """The https:// address in `<name>.url` next to the APK, or None."""
+    path = os.path.join(_apk_dir(), name[:-4] + ".url")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            url = fh.read(2000).strip()
+    except OSError:
+        return None
+    return url if url.startswith("https://") and "\n" not in url else None
+
+
 def _send(name):
+    url = _mirror(name)
+    if url:
+        resp = redirect(url, code=302)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
     resp = send_from_directory(_apk_dir(), name, conditional=True, max_age=0, as_attachment=True,
                                download_name=name, mimetype=APK_TYPE)
     resp.headers["Cache-Control"] = "no-cache"
